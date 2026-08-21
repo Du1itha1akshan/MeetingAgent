@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+
+.env
+local.settings.json
+github-app-key.pem
+*.pem
+
+.vscode/
+bin/
+obj/

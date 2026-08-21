@@ -1,0 +1,33 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+
+    "AZURE_TENANT_ID": "00000000-0000-0000-0000-000000000000",
+    "AZURE_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
+    "AZURE_CLIENT_SECRET": "your-client-secret",
+
+    "MONITORED_USERS": "alice@contoso.com",
+
+    "NOTIFICATION_URL": "https://your-tunnel-or-function-url/api/graph/notifications",
+    "GRAPH_CLIENT_STATE": "choose-a-long-random-string",
+
+    "ANTHROPIC_API_KEY": "sk-ant-your-key",
+    "CLAUDE_MODEL": "claude-sonnet-4-6",
+
+    "GITHUB_OWNER": "your-org-or-username",
+    "GITHUB_REPO": "meeting-notes",
+    "GITHUB_BRANCH": "main",
+    "GITHUB_BASE_PATH": "meetings",
+    "CREATE_ISSUES_FOR_ACTION_ITEMS": "true",
+    "GITHUB_APP_ID": "123456",
+    "GITHUB_APP_PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----\nreplace-with-real-key\n-----END RSA PRIVATE KEY-----",
+    "GITHUB_APP_INSTALLATION_ID": "987654",
+
+    "POLL_LOOKBACK_MINUTES": "20"
+  },
+  "Host": {
+    "LocalHttpPort": 3978
+  }
+}

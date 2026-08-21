@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "baseName": { "value": "meetingagent" },
+    "azureTenantId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "azureClientId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "monitoredUsers": { "value": "alice@contoso.com" },
+    "githubOwner": { "value": "your-org-or-username" },
+    "githubRepo": { "value": "meeting-notes" },
+    "githubBranch": { "value": "main" },
+    "githubBasePath": { "value": "meetings" },
+    "createIssuesForActionItems": { "value": true },
+    "githubAppId": { "value": "123456" },
+    "githubAppInstallationId": { "value": "987654" },
+    "pollLookbackMinutes": { "value": 20 }
+
+    // azureClientSecret, graphClientState, anthropicApiKey, githubAppPrivateKey
+    // are @secure() and deliberately NOT here — scripts/deploy.ps1 passes them
+    // as -SecureString CLI parameters at deploy time, sourced from
+    // provision-entra-app.ps1's output and your own API keys, never written
+    // to disk in this repo.
+  }
+}
