@@ -1,4 +1,4 @@
-import { QueueClient } from "@azure/storage-queue";
+import { QueueClient, QueueServiceClient } from "@azure/storage-queue";
 import { getConfig } from "../config";
 
 export const TRANSCRIPT_QUEUE_NAME = "meeting-transcript-ready";
@@ -15,10 +15,9 @@ let queuePromise: Promise<QueueClient> | null = null;
 async function getQueueClient(): Promise<QueueClient> {
   if (!queuePromise) {
     queuePromise = getConfig().then(async (config) => {
-      const client = QueueClient.fromConnectionString(
-        config.storage.connectionString,
-        TRANSCRIPT_QUEUE_NAME
-      );
+      const client = QueueServiceClient.fromConnectionString(
+        config.storage.connectionString
+      ).getQueueClient(TRANSCRIPT_QUEUE_NAME);
       await client.createIfNotExists();
       return client;
     });
