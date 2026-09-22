@@ -97,7 +97,7 @@ try {
   Write-Host "Function App: $functionAppName"
   Write-Host "Webhook URL:  $notificationUrl"
   Write-Host "`nThe pollTimer function runs every 5 minutes and will create the Graph"
-  Write-Host "subscription on its first run — no separate 'start' step needed."
+  Write-Host "subscription on its first run - no separate 'start' step needed."
 } finally {
   Pop-Location
 }
