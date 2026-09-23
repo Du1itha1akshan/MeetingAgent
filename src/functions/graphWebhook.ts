@@ -11,7 +11,7 @@ interface GraphNotification {
 }
 
 function parseResource(resource: string): { userId: string; meetingId: string } | null {
-  const match = resource.match(/Users\/([^/]+)\/OnlineMeetings\('([^']+)'\)/i);
+  const match = resource.match(/users\('([^']+)'\)\/onlineMeetings\('([^']+)'\)/i);
   if (!match) return null;
   return { userId: match[1], meetingId: match[2] };
 }
