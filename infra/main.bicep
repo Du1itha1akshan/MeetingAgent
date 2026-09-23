@@ -140,12 +140,12 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     serverFarmId: hostingPlan.id
     httpsOnly: true
     siteConfig: {
-      linuxFxVersion: 'Node|24'
+      linuxFxVersion: 'Node|20'
       appSettings: [
         { name: 'AzureWebJobsStorage', value: storageConnectionString }
         { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'node' }
         { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
-        { name: 'WEBSITE_NODE_DEFAULT_VERSION', value: '~24' }
+        { name: 'WEBSITE_NODE_DEFAULT_VERSION', value: '~20' }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
         { name: 'KEY_VAULT_URI', value: keyVault.properties.vaultUri }
         { name: 'AZURE_TENANT_ID', value: azureTenantId }
