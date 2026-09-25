@@ -46,6 +46,7 @@ export async function pollTimerHandler(_timer: Timer, context: InvocationContext
           onlineMeetingId,
           meetingSubject: meeting.subject,
           meetingStartIso: meeting.start,
+          source: "poll",
         });
       } catch (err) {
         context.error(`[poll] failed to enqueue "${meeting.subject}":`, err);

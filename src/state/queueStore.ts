@@ -8,6 +8,7 @@ export interface TranscriptReadyMessage {
   onlineMeetingId: string;
   meetingSubject: string;
   meetingStartIso: string;
+  source: "webhook" | "poll";
 }
 
 let queuePromise: Promise<QueueClient> | null = null;

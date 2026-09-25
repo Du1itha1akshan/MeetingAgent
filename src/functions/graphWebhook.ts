@@ -59,6 +59,7 @@ export async function graphWebhookHandler(
         onlineMeetingId: parsed.meetingId,
         meetingSubject: meta.subject,
         meetingStartIso: meta.startIso,
+        source: "webhook",
       });
     } catch (err) {
       context.error(`[webhook] failed to enqueue meeting ${parsed.meetingId}:`, err);

@@ -7,7 +7,7 @@ export async function processTranscriptQueueHandler(
   context: InvocationContext
 ): Promise<void> {
   const msg = (typeof message === "string" ? JSON.parse(message) : message) as TranscriptReadyMessage;
-  context.log(`[queue] processing "${msg.meetingSubject}" for ${msg.userId}`);
+  context.log(`[queue] processing "${msg.meetingSubject}" for ${msg.userId} (source: ${msg.source})`);
 
   // Throwing here (transient Claude/Graph/GitHub failure) lets the Functions
   // queue trigger retry automatically (host.json: up to 5 attempts) before
