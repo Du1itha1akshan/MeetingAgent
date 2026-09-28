@@ -1,21 +1,21 @@
 # Meeting Agent Testing Session
 
-**Date:** 2026-09-24T04:50:00Z
+**Date:** 2026-09-24T04:50:00.0000000
 
 ## Overview
-This appears to be an informal technical testing session between Binura Ranasinghe and Dulitha Lakshan focused on testing a meeting agent, likely involving Microsoft Teams and Microsoft Graph API integration. The conversation includes fragmented discussion around meeting IDs, programmatic IDs, transcription, and recording functionality. Much of the transcript is incoherent or in a mix of languages, making it difficult to extract structured information.
+This appears to be an informal technical testing session between Binura Ranasinghe and Dulitha Lakshan focused on a meeting agent implementation. The conversation touched on Microsoft Graph API usage, programmatic meeting IDs, and meeting analytics. The transcript is largely fragmented and unclear, with significant portions in non-English languages or unintelligible speech.
 
 ## Key Points
-- Discussion around obtaining a programmatic meeting ID using Microsoft Graph API (get user, user ID, online meetings, filter by join web URL)
-- References to meeting transcription and recording functionality being tested
-- Mention of Microsoft Graph API in the context of retrieving meeting data
-- Brief mention of action items and summarization, possibly referencing Copilot features
-- GitHub was briefly mentioned in the context of the work being done
+- Discussion around obtaining a programmatic meeting ID using Microsoft Graph API
+- Reference to using 'get user / user ID / online meetings' filtered by join web URL to retrieve a meeting ID
+- Mention of Microsoft Graph API in the context of the agent implementation
+- Brief reference to meeting analytics
+- Discussion around recording and transcription functionality
 
 ## Decisions
 _None captured._
 
 ## Open Questions
-- How to retrieve the programmatic meeting ID using the Microsoft Graph API (get user/online meetings filtered by join web URL)?
-- Is the meeting recording and transcription functionality working correctly in the agent?
-- What is the status of the Teams agent implementation?
+- How should the programmatic meeting ID be retrieved via Microsoft Graph API for the meeting agent?
+- Is the recording and transcription functionality working correctly in the current implementation?
+- What is the status of the meeting agent Teams implementation?
