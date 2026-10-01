@@ -35,6 +35,7 @@ export interface SubscriptionRecord {
 
 const SUBSCRIPTIONS_TABLE = "MeetingAgentSubscriptions";
 const PROCESSED_TABLE = "MeetingAgentProcessed";
+const PENDING_TABLE = "MeetingAgentPending";
 
 export async function getSubscriptionRecord(
   userId: string
@@ -104,4 +105,86 @@ export async function markProcessed(
     },
     "Replace"
   );
+}
+
+/**
+ * Tracks a meeting that has ended but whose transcript wasn't ready yet, so
+ * pollTimer can keep re-checking it on every subsequent run regardless of
+ * whether it's still inside the calendar lookback window (a meeting running
+ * long enough to miss that window would otherwise never be revisited).
+ */
+export interface PendingTranscriptRecord {
+  userId: string;
+  onlineMeetingId: string;
+  meetingSubject: string;
+  meetingStartIso: string;
+  firstSeenAt: string;
+}
+
+export async function getPendingRecord(
+  onlineMeetingId: string
+): Promise<PendingTranscriptRecord | null> {
+  const client = await getTableClient(PENDING_TABLE);
+  try {
+    const entity = await client.getEntity<{
+      userId: string;
+      meetingSubject: string;
+      meetingStartIso: string;
+      firstSeenAt: string;
+    }>("pending", onlineMeetingId);
+    return {
+      userId: entity.userId,
+      onlineMeetingId,
+      meetingSubject: entity.meetingSubject,
+      meetingStartIso: entity.meetingStartIso,
+      firstSeenAt: entity.firstSeenAt,
+    };
+  } catch (err: any) {
+    if (err.statusCode === 404) return null;
+    throw err;
+  }
+}
+
+export async function putPendingRecord(record: PendingTranscriptRecord): Promise<void> {
+  const client = await getTableClient(PENDING_TABLE);
+  await client.upsertEntity(
+    {
+      partitionKey: "pending",
+      rowKey: record.onlineMeetingId,
+      userId: record.userId,
+      meetingSubject: record.meetingSubject,
+      meetingStartIso: record.meetingStartIso,
+      firstSeenAt: record.firstSeenAt,
+    },
+    "Replace"
+  );
+}
+
+export async function deletePendingRecord(onlineMeetingId: string): Promise<void> {
+  const client = await getTableClient(PENDING_TABLE);
+  try {
+    await client.deleteEntity("pending", onlineMeetingId);
+  } catch (err: any) {
+    if (err.statusCode !== 404) throw err;
+  }
+}
+
+export async function listPendingRecords(): Promise<PendingTranscriptRecord[]> {
+  const client = await getTableClient(PENDING_TABLE);
+  const records: PendingTranscriptRecord[] = [];
+  for await (const entity of client.listEntities<{
+    userId: string;
+    meetingSubject: string;
+    meetingStartIso: string;
+    firstSeenAt: string;
+  }>({ queryOptions: { filter: `PartitionKey eq 'pending'` } })) {
+    records.push({
+      userId: entity.userId,
+      onlineMeetingId: entity.rowKey!,
+      meetingSubject: entity.meetingSubject,
+      meetingStartIso: entity.meetingStartIso,
+      firstSeenAt: entity.firstSeenAt,
+    });
+  }
+  return records;
 }
