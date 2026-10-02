@@ -38,15 +38,28 @@ export async function getTranscriptContentVtt(
   );
 }
 
-/** Convenience: get the most recent transcript's raw VTT for a meeting. */
+/**
+ * Convenience: get the most recent transcript's raw VTT for a meeting.
+ *
+ * A recurring meeting series reuses the same onlineMeetingId across every
+ * occurrence, so `listTranscripts` returns transcripts from ALL past
+ * occurrences, not just the current one. Without `afterIso`, "most recent"
+ * would happily return last week's already-processed transcript before
+ * today's actually exists — pass the current occurrence's scheduled start
+ * (meetingStartIso) to only consider transcripts created for THIS occurrence.
+ */
 export async function getLatestTranscriptVtt(
   userId: string,
-  onlineMeetingId: string
+  onlineMeetingId: string,
+  afterIso?: string
 ): Promise<{ vtt: string; transcriptId: string } | null> {
   const transcripts = await listTranscripts(userId, onlineMeetingId);
-  if (!transcripts.length) return null;
+  const candidates = afterIso
+    ? transcripts.filter((t) => t.createdDateTime > afterIso)
+    : transcripts;
+  if (!candidates.length) return null;
 
-  const latest = transcripts.sort((a, b) =>
+  const latest = candidates.sort((a, b) =>
     b.createdDateTime.localeCompare(a.createdDateTime)
   )[0];
 

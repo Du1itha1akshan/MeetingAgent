@@ -51,8 +51,13 @@ export async function pollTimerHandler(_timer: Timer, context: InvocationContext
 
   for (const pending of pendingRecords) {
     try {
+      // A recurring series reuses the same onlineMeetingId across every
+      // occurrence, so listTranscripts() can return a PRIOR occurrence's
+      // transcript even before this one's exists — only count one created
+      // after this occurrence's scheduled start.
       const transcripts = await listTranscripts(pending.userId, pending.onlineMeetingId);
-      if (transcripts.length > 0) {
+      const current = transcripts.filter((t) => t.createdDateTime > pending.meetingStartIso);
+      if (current.length > 0) {
         await enqueueTranscriptReady({
           userId: pending.userId,
           onlineMeetingId: pending.onlineMeetingId,
@@ -95,9 +100,12 @@ export async function pollTimerHandler(_timer: Timer, context: InvocationContext
 
       try {
         const onlineMeetingId = await resolveOnlineMeetingId(userId, meeting.joinUrl);
+        // Same recurring-series caveat as above: only a transcript created
+        // after THIS occurrence's start actually belongs to it.
         const transcripts = await listTranscripts(userId, onlineMeetingId);
+        const current = transcripts.filter((t) => t.createdDateTime > meeting.start);
 
-        if (transcripts.length > 0) {
+        if (current.length > 0) {
           await enqueueTranscriptReady({
             userId,
             onlineMeetingId,

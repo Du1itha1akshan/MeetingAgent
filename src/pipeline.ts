@@ -20,7 +20,10 @@ export async function processMeetingTranscript(params: {
   const { userId, onlineMeetingId, meetingSubject, meetingStartIso } = params;
 
   console.log(`[pipeline] fetching transcript for "${meetingSubject}" (${onlineMeetingId})`);
-  const result = await getLatestTranscriptVtt(userId, onlineMeetingId);
+  // afterIso=meetingStartIso: a recurring series reuses the same onlineMeetingId
+  // across every occurrence, so without this cutoff "latest transcript" could
+  // mean a prior, already-processed occurrence's transcript, not this one's.
+  const result = await getLatestTranscriptVtt(userId, onlineMeetingId, meetingStartIso);
   if (!result) {
     console.warn(`[pipeline] no transcript available yet for ${onlineMeetingId}`);
     return;
