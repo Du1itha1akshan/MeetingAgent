@@ -134,6 +134,9 @@ export async function publishMeetingDocs(params: {
   meetingDateIso: string;
   segments: TranscriptSegment[];
   summary: MeetingSummary;
+  recordingLink: string;
+  organizerName: string;
+  organizerEmail: string;
 }): Promise<{ folderPath: string }> {
   const config = await getConfig();
   const dateStr = params.meetingDateIso.slice(0, 10); // YYYY-MM-DD
@@ -158,6 +161,20 @@ export async function publishMeetingDocs(params: {
     `${folderPath}/action-items.md`,
     renderActionItemsMarkdown(params.summary),
     `Add action items for ${params.meetingSubject} (${dateStr})`
+  );
+
+  const metadata = {
+    recording_link: params.recordingLink,
+    meeting_title: params.meetingSubject.trim(),
+    organizer: {
+      name: params.organizerName,
+      email: params.organizerEmail,
+    },
+  };
+  await upsertFile(
+    `${folderPath}/metadata.json`,
+    `${JSON.stringify(metadata, null, 2)}\n`,
+    `Add metadata for ${params.meetingSubject} (${dateStr})`
   );
 
   if (config.github.createIssuesForActionItems && params.summary.action_items.length) {

@@ -70,3 +70,71 @@ export async function resolveOnlineMeetingId(
   }
   return data.value[0].id;
 }
+
+export interface MeetingMetadata {
+  meetingLink: string;
+  chatId: string;
+  organizerName: string;
+  organizerEmail: string;
+}
+
+/**
+ * Best-effort join link + organizer for a meeting. Never throws: a metadata
+ * gap must not block publishing the summary, so anything unresolved is "".
+ *
+ * Link and organizer email come from the onlineMeeting resource. That
+ * resource carries no display name (and the app has no User.Read.All to look
+ * one up), so the organizer's name is read from the calendar event instead.
+ */
+export async function getMeetingMetadata(
+  userId: string,
+  onlineMeetingId: string,
+  meetingStartIso: string
+): Promise<MeetingMetadata> {
+  const result: MeetingMetadata = {
+    meetingLink: "",
+    chatId: "",
+    organizerName: "",
+    organizerEmail: "",
+  };
+
+  try {
+    const meeting = await graphFetch<{
+      joinWebUrl?: string;
+      chatInfo?: { threadId?: string };
+      participants?: { organizer?: { upn?: string } };
+    }>(`/users/${encodeURIComponent(userId)}/onlineMeetings/${onlineMeetingId}`);
+    result.meetingLink = meeting.joinWebUrl ?? "";
+    result.chatId = meeting.chatInfo?.threadId ?? "";
+    result.organizerEmail = meeting.participants?.organizer?.upn ?? "";
+  } catch (err) {
+    console.warn(`[metadata] onlineMeeting lookup failed for ${onlineMeetingId}:`, err);
+  }
+
+  if (!result.meetingLink) return result;
+
+  try {
+    // Calendar start times come back without a zone suffix (UTC).
+    const hasZone = /(Z|[+-]\d{2}:\d{2})$/i.test(meetingStartIso);
+    const startMs = Date.parse(hasZone ? meetingStartIso : `${meetingStartIso}Z`);
+    const params = new URLSearchParams({
+      startDateTime: new Date(startMs - 60_000).toISOString(),
+      endDateTime: new Date(startMs + 60_000).toISOString(),
+      $select: "onlineMeeting,organizer",
+    });
+    const data = await graphFetch<{
+      value: {
+        onlineMeeting?: { joinUrl: string };
+        organizer?: { emailAddress?: { name?: string; address?: string } };
+      }[];
+    }>(`/users/${encodeURIComponent(userId)}/calendarView?${params.toString()}`);
+
+    const event = data.value.find((e) => e.onlineMeeting?.joinUrl === result.meetingLink);
+    result.organizerName = event?.organizer?.emailAddress?.name ?? "";
+    result.organizerEmail ||= event?.organizer?.emailAddress?.address ?? "";
+  } catch (err) {
+    console.warn(`[metadata] organizer name lookup failed for ${onlineMeetingId}:`, err);
+  }
+
+  return result;
+}

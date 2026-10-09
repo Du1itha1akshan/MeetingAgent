@@ -4,6 +4,7 @@ export interface TranscriptRef {
   id: string;
   createdDateTime: string;
   meetingId: string;
+  callId?: string;
 }
 
 /** Lists transcript objects available for a given online meeting. */
@@ -12,13 +13,14 @@ export async function listTranscripts(
   onlineMeetingId: string
 ): Promise<TranscriptRef[]> {
   const data = await graphFetch<{
-    value: { id: string; createdDateTime: string }[];
+    value: { id: string; createdDateTime: string; callId?: string }[];
   }>(`/users/${encodeURIComponent(userId)}/onlineMeetings/${onlineMeetingId}/transcripts`);
 
   return data.value.map((t) => ({
     id: t.id,
     createdDateTime: t.createdDateTime,
     meetingId: onlineMeetingId,
+    callId: t.callId,
   }));
 }
 
@@ -52,7 +54,7 @@ export async function getLatestTranscriptVtt(
   userId: string,
   onlineMeetingId: string,
   afterIso?: string
-): Promise<{ vtt: string; transcriptId: string } | null> {
+): Promise<{ vtt: string; transcriptId: string; callId?: string } | null> {
   const transcripts = await listTranscripts(userId, onlineMeetingId);
   const candidates = afterIso
     ? transcripts.filter((t) => t.createdDateTime > afterIso)
@@ -64,5 +66,5 @@ export async function getLatestTranscriptVtt(
   )[0];
 
   const vtt = await getTranscriptContentVtt(userId, onlineMeetingId, latest.id);
-  return { vtt, transcriptId: latest.id };
+  return { vtt, transcriptId: latest.id, callId: latest.callId };
 }

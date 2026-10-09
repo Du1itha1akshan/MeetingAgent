@@ -6,6 +6,8 @@ import { getConfig } from "../config";
  *   - OnlineMeetings.Read.All          (read meeting metadata)
  *   - OnlineMeetingTranscript.Read.All (read transcripts tenant-wide)
  *   - Calendars.Read                  (discover scheduled meetings)
+ *   - Chat.Read.All                   (optional: read the recording link from the
+ *                                      meeting chat — without it recording_link is "")
  *
  * Provisioned by scripts/provision-entra-app.ps1. Teams also gates ALL Graph
  * transcript access behind a tenant-level toggle, EnableGraphTranscriptAccess,

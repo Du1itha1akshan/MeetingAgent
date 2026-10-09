@@ -1,4 +1,6 @@
 import { getLatestTranscriptVtt } from "./graph/transcripts";
+import { getMeetingMetadata } from "./graph/calendar";
+import { getRecordingUrl } from "./graph/recordings";
 import { parseVtt, segmentsToPlainText } from "./processing/transcriptParser";
 import { summarizeTranscript } from "./processing/summarizer";
 import { publishMeetingDocs } from "./github/publisher";
@@ -44,11 +46,23 @@ export async function processMeetingTranscript(params: {
   console.log(`[pipeline] summarizing ${segments.length} segments via Claude`);
   const summary = await summarizeTranscript(meetingSubject, plainText);
 
+  const metadata = await getMeetingMetadata(userId, onlineMeetingId, meetingStartIso);
+  // The transcript's callId pins the recording message in the (series-shared)
+  // meeting chat to this occurrence. "" when there's no recording or no access.
+  const recordingUrl = await getRecordingUrl(
+    metadata.chatId,
+    result.callId ?? "",
+    meetingStartIso
+  );
+
   const { folderPath } = await publishMeetingDocs({
     meetingSubject,
     meetingDateIso: meetingStartIso,
     segments,
     summary,
+    recordingLink: recordingUrl,
+    organizerName: metadata.organizerName,
+    organizerEmail: metadata.organizerEmail,
   });
 
   await markProcessed(userId, onlineMeetingId, result.transcriptId);

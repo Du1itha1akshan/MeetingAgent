@@ -87,6 +87,7 @@ repo under `meetings/2026-08-20-sprint-planning/`:
 - `transcript.md` — full speaker-labeled transcript
 - `summary.md` — overview, key points, decisions, open questions
 - `action-items.md` — table of owner / description / due date
+- `metadata.json` — `recording_link` (the recording URL from the meeting chat; empty if there's no recording or the app lacks chat-read access), title, and organizer (name + email)
 
 ...plus one GitHub Issue per action item (toggle with
 `CREATE_ISSUES_FOR_ACTION_ITEMS`).
