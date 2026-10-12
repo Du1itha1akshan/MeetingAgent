@@ -16,6 +16,7 @@ interface GraphEvent {
   start: { dateTime: string };
   end: { dateTime: string };
   isOnlineMeeting: boolean;
+  isCancelled?: boolean;
   onlineMeeting?: { joinUrl: string };
 }
 
@@ -32,7 +33,7 @@ export async function listScheduledTeamsMeetings(
   const params = new URLSearchParams({
     startDateTime: startWindowIso,
     endDateTime: endWindowIso,
-    $select: "id,subject,start,end,isOnlineMeeting,onlineMeeting",
+    $select: "id,subject,start,end,isOnlineMeeting,isCancelled,onlineMeeting",
   });
 
   const data = await graphFetch<{ value: GraphEvent[] }>(
@@ -40,7 +41,9 @@ export async function listScheduledTeamsMeetings(
   );
 
   return data.value
-    .filter((e) => e.isOnlineMeeting && e.onlineMeeting?.joinUrl)
+    // Cancelled meetings stay in calendarView (subject prefixed "Canceled:")
+    // but never happen, so they'd wait on a transcript that can't exist.
+    .filter((e) => !e.isCancelled && e.isOnlineMeeting && e.onlineMeeting?.joinUrl)
     .map((e) => ({
       userId,
       eventId: e.id,
