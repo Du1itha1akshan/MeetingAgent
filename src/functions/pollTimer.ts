@@ -1,8 +1,8 @@
 import { app, Timer, InvocationContext } from "@azure/functions";
 import { getConfig } from "../config";
 import { listScheduledTeamsMeetings, resolveOnlineMeetingId } from "../graph/calendar";
-import { listTranscripts } from "../graph/transcripts";
-import { ensureAllSubscriptions } from "../graph/subscriptions";
+import { listTranscripts, isTranscriptForOccurrence } from "../graph/transcripts";
+import { ensureTenantSubscription } from "../graph/subscriptions";
 import { enqueueTranscriptReady } from "../state/queueStore";
 import {
   getPendingRecord,
@@ -21,7 +21,7 @@ const PENDING_MAX_AGE_HOURS = 24;
  * same "wake up periodically" mechanism and there's no long-lived process
  * left to host a setInterval:
  *
- *   1. Keep each monitored user's Graph subscription alive (create/renew).
+ *   1. Keep the tenant-wide Graph transcript subscription alive (create/renew).
  *   2. Re-check every meeting still waiting on its transcript, regardless of
  *      whether it's still inside the calendar lookback window — a meeting
  *      that runs long enough to age out of that window would otherwise never
@@ -36,7 +36,11 @@ const PENDING_MAX_AGE_HOURS = 24;
 export async function pollTimerHandler(_timer: Timer, context: InvocationContext): Promise<void> {
   const config = await getConfig();
 
-  await ensureAllSubscriptions(config.monitoredUsers);
+  try {
+    await ensureTenantSubscription();
+  } catch (err) {
+    context.error("[poll] failed to ensure tenant subscription:", err);
+  }
 
   const now = new Date();
   const lookbackStart = new Date(now.getTime() - config.poll.lookbackMinutes * 60_000);
@@ -56,7 +60,12 @@ export async function pollTimerHandler(_timer: Timer, context: InvocationContext
       // transcript even before this one's exists — only count one created
       // after this occurrence's scheduled start.
       const transcripts = await listTranscripts(pending.userId, pending.onlineMeetingId);
-      const current = transcripts.filter((t) => t.createdDateTime > pending.meetingStartIso);
+      const current = transcripts.filter((t) =>
+        isTranscriptForOccurrence(t.createdDateTime, pending.meetingStartIso)
+      );
+      context.log(
+        `[poll] pending "${pending.meetingSubject}": ${transcripts.length} transcript(s), ${current.length} for this occurrence`
+      );
       if (current.length > 0) {
         await enqueueTranscriptReady({
           userId: pending.userId,
@@ -103,7 +112,13 @@ export async function pollTimerHandler(_timer: Timer, context: InvocationContext
         // Same recurring-series caveat as above: only a transcript created
         // after THIS occurrence's start actually belongs to it.
         const transcripts = await listTranscripts(userId, onlineMeetingId);
-        const current = transcripts.filter((t) => t.createdDateTime > meeting.start);
+        const current = transcripts.filter((t) =>
+          isTranscriptForOccurrence(t.createdDateTime, meeting.start)
+        );
+        context.log(
+          `[poll] "${meeting.subject}" (${onlineMeetingId}): ${transcripts.length} transcript(s), ` +
+            `${current.length} for this occurrence -> ${current.length > 0 ? "enqueue" : "pending"}`
+        );
 
         if (current.length > 0) {
           await enqueueTranscriptReady({

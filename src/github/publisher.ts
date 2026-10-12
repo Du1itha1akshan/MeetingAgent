@@ -165,11 +165,6 @@ export async function publishMeetingDocs(params: {
 
   const metadata = {
     recording_link: params.recordingLink,
-    meeting_title: params.meetingSubject.trim(),
-    organizer: {
-      name: params.organizerName,
-      email: params.organizerEmail,
-    },
   };
   await upsertFile(
     `${folderPath}/metadata.json`,

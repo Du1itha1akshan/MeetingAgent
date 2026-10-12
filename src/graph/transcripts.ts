@@ -40,6 +40,26 @@ export async function getTranscriptContentVtt(
   );
 }
 
+// Meetings often begin a few minutes before their scheduled start (transcript
+// created before the calendar's start time), so "created after the scheduled
+// start" is too strict. A prior occurrence of a series is hours or days older,
+// so a generous tolerance still excludes it.
+const EARLY_START_TOLERANCE_MS = 30 * 60_000;
+
+/**
+ * True if a transcript created at `createdIso` belongs to the occurrence that
+ * was scheduled to start at `meetingStartIso`. Calendar times come back
+ * without a zone suffix (UTC), while Graph transcript timestamps carry "Z",
+ * so both are parsed to real instants instead of compared as strings.
+ */
+export function isTranscriptForOccurrence(createdIso: string, meetingStartIso: string): boolean {
+  const hasZone = /(Z|[+-]\d{2}:\d{2})$/i.test(meetingStartIso);
+  const startMs = Date.parse(hasZone ? meetingStartIso : `${meetingStartIso}Z`);
+  const createdMs = Date.parse(createdIso);
+  if (Number.isNaN(startMs) || Number.isNaN(createdMs)) return true; // can't tell: don't drop it
+  return createdMs > startMs - EARLY_START_TOLERANCE_MS;
+}
+
 /**
  * Convenience: get the most recent transcript's raw VTT for a meeting.
  *
@@ -57,7 +77,7 @@ export async function getLatestTranscriptVtt(
 ): Promise<{ vtt: string; transcriptId: string; callId?: string } | null> {
   const transcripts = await listTranscripts(userId, onlineMeetingId);
   const candidates = afterIso
-    ? transcripts.filter((t) => t.createdDateTime > afterIso)
+    ? transcripts.filter((t) => isTranscriptForOccurrence(t.createdDateTime, afterIso))
     : transcripts;
   if (!candidates.length) return null;
 

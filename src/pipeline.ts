@@ -27,8 +27,11 @@ export async function processMeetingTranscript(params: {
   // mean a prior, already-processed occurrence's transcript, not this one's.
   const result = await getLatestTranscriptVtt(userId, onlineMeetingId, meetingStartIso);
   if (!result) {
-    console.warn(`[pipeline] no transcript available yet for ${onlineMeetingId}`);
-    return;
+    // Throw, don't return: a webhook can fire before Graph lists the transcript,
+    // and returning would mark the queue message done with nothing left to retry
+    // it. Throwing lets the queue retry (host.json: up to 5 attempts) before
+    // parking it in the poison queue; the poll sweep still backs it up.
+    throw new Error(`No transcript available yet for ${onlineMeetingId} ("${meetingSubject}")`);
   }
 
   if (await isAlreadyProcessed(userId, onlineMeetingId, result.transcriptId)) {

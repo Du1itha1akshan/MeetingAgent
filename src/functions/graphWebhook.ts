@@ -1,29 +1,19 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { getConfig } from "../config";
-import { graphFetch } from "../graph/auth";
+import { getOnlineMeeting, findInvolvedMonitoredUser } from "../graph/meetings";
 import { enqueueTranscriptReady } from "../state/queueStore";
 
 interface GraphNotification {
   subscriptionId: string;
   clientState?: string;
-  resource: string; // e.g. "Users/{userId}/OnlineMeetings('{meetingId}')/Transcripts('{transcriptId}')"
+  // Tenant-wide: "communications/onlineMeetings('{meetingId}')/transcripts('{transcriptId}')"
+  resource: string;
   changeType: string;
 }
 
-function parseResource(resource: string): { userId: string; meetingId: string } | null {
-  const match = resource.match(/users\('([^']+)'\)\/onlineMeetings\('([^']+)'\)/i);
-  if (!match) return null;
-  return { userId: match[1], meetingId: match[2] };
-}
-
-async function lookupMeetingMetadata(userId: string, meetingId: string) {
-  const meeting = await graphFetch<{ subject?: string; startDateTime?: string }>(
-    `/users/${encodeURIComponent(userId)}/onlineMeetings/${meetingId}`
-  );
-  return {
-    subject: meeting.subject ?? "Untitled meeting",
-    startIso: meeting.startDateTime ?? new Date().toISOString(),
-  };
+function parseMeetingId(resource: string): string | null {
+  const match = resource.match(/onlineMeetings\('([^']+)'\)/i);
+  return match ? match[1] : null;
 }
 
 export async function graphWebhookHandler(
@@ -46,23 +36,29 @@ export async function graphWebhookHandler(
       continue;
     }
 
-    const parsed = parseResource(notification.resource);
-    if (!parsed) {
+    const meetingId = parseMeetingId(notification.resource);
+    if (!meetingId) {
       context.warn(`[webhook] unrecognized resource format: ${notification.resource}`);
       continue;
     }
 
     try {
-      const meta = await lookupMeetingMetadata(parsed.userId, parsed.meetingId);
+      // The subscription is tenant-wide, so every meeting's transcript lands
+      // here. Graph can't filter by attendee, so drop anything the JRC Meeting
+      // Assistant isn't part of before it costs a queue message or a Claude call.
+      const meeting = await getOnlineMeeting(meetingId);
+      const monitoredUser = await findInvolvedMonitoredUser(meeting);
+      if (!monitoredUser) continue;
+
       await enqueueTranscriptReady({
-        userId: parsed.userId,
-        onlineMeetingId: parsed.meetingId,
-        meetingSubject: meta.subject,
-        meetingStartIso: meta.startIso,
+        userId: monitoredUser, // transcripts are fetched under the assistant, as in the poll path
+        onlineMeetingId: meetingId,
+        meetingSubject: meeting.subject ?? "Untitled meeting",
+        meetingStartIso: meeting.startDateTime ?? new Date().toISOString(),
         source: "webhook",
       });
     } catch (err) {
-      context.error(`[webhook] failed to enqueue meeting ${parsed.meetingId}:`, err);
+      context.error(`[webhook] failed to process meeting ${meetingId}:`, err);
       // Swallow: returning 5xx here would make Graph retry the whole batch.
       // The polling fallback will pick this meeting up within its lookback window.
     }
