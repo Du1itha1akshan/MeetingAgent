@@ -55,62 +55,25 @@ export async function getOnlineMeeting(onlineMeetingId: string): Promise<OnlineM
   throw lastErr ?? new Error(`No user available to look up meeting ${onlineMeetingId}`);
 }
 
-interface MonitoredUser {
-  configValue: string; // exactly as written in MONITORED_USERS; used as the /users/{x} path segment
-  ids: string[];
-  upns: string[];
-}
-
-let monitoredPromise: Promise<MonitoredUser[]> | null = null;
-
-/**
- * MONITORED_USERS may hold UPNs or object ids, while meeting participants
- * expose both, so resolve each entry once to its (id, upn) pair and match on either.
- */
-function getMonitoredUsers(): Promise<MonitoredUser[]> {
-  if (!monitoredPromise) {
-    monitoredPromise = (async () => {
-      const config = await getConfig();
-      return Promise.all(
-        config.monitoredUsers.map(async (configValue) => {
-          const ids = [configValue.toLowerCase()];
-          const upns = [configValue.toLowerCase()];
-          try {
-            const u = await graphFetch<{ id: string; userPrincipalName: string }>(
-              `/users/${encodeURIComponent(configValue)}?$select=id,userPrincipalName`
-            );
-            ids.push(u.id.toLowerCase());
-            upns.push(u.userPrincipalName.toLowerCase());
-          } catch (err) {
-            console.error(`[meetings] could not resolve monitored user "${configValue}":`, err);
-          }
-          return { configValue, ids, upns };
-        })
-      );
-    })();
-    monitoredPromise.catch(() => {
-      monitoredPromise = null; // don't cache a failed lookup
-    });
-  }
-  return monitoredPromise;
-}
-
 /**
  * Returns the MONITORED_USERS entry (e.g. the JRC Meeting Assistant) that is the
  * organizer or an invited attendee of this meeting, or null if none is.
  * That entry is then used as the /users/{x} path for the transcript calls.
+ *
+ * An entry matches an attendee's object id or UPN exactly as written (case-
+ * insensitive), so MONITORED_USERS should hold the object id or the UPN — no
+ * Graph lookup (and no User.Read.All permission) is needed to compare them.
  */
 export async function findInvolvedMonitoredUser(meeting: OnlineMeeting): Promise<string | null> {
-  const monitored = await getMonitoredUsers();
+  const config = await getConfig();
   const people = [meeting.participants?.organizer, ...(meeting.participants?.attendees ?? [])];
 
-  for (const user of monitored) {
-    const present = people.some((p) => {
-      const id = p?.identity?.user?.id?.toLowerCase();
-      const upn = p?.upn?.toLowerCase();
-      return (id && user.ids.includes(id)) || (upn && user.upns.includes(upn));
-    });
-    if (present) return user.configValue;
+  for (const configValue of config.monitoredUsers) {
+    const wanted = configValue.toLowerCase();
+    const present = people.some(
+      (p) => p?.identity?.user?.id?.toLowerCase() === wanted || p?.upn?.toLowerCase() === wanted
+    );
+    if (present) return configValue;
   }
   return null;
 }
