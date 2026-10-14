@@ -4,14 +4,15 @@ import { getRecordingUrl } from "./graph/recordings";
 import { parseVtt, segmentsToPlainText } from "./processing/transcriptParser";
 import { summarizeTranscript } from "./processing/summarizer";
 import { publishMeetingDocs } from "./github/publisher";
-import { isAlreadyProcessed, markProcessed } from "./state/tableStore";
+import { claimTranscript, markProcessed, releaseClaim } from "./state/tableStore";
 
 /**
  * End-to-end processing for a single meeting once its transcript is ready.
  * Called from both the webhook path (via the queue) and the polling
- * fallback, which can observe the same finished meeting — the
- * isAlreadyProcessed/markProcessed pair makes re-running this a no-op
- * instead of a duplicate publish + duplicate GitHub issues.
+ * fallback, which can observe the same finished meeting — and Graph can
+ * deliver one notification twice. claimTranscript() lets exactly one
+ * invocation publish a given transcript, so duplicates neither race each
+ * other into GitHub write conflicts nor create duplicate issues.
  */
 export async function processMeetingTranscript(params: {
   userId: string;
@@ -34,44 +35,64 @@ export async function processMeetingTranscript(params: {
     throw new Error(`No transcript available yet for ${onlineMeetingId} ("${meetingSubject}")`);
   }
 
-  if (await isAlreadyProcessed(userId, onlineMeetingId, result.transcriptId)) {
+  const claim = await claimTranscript(userId, onlineMeetingId, result.transcriptId);
+  if (claim.status === "done") {
     console.log(`[pipeline] already processed ${onlineMeetingId}/${result.transcriptId}, skipping`);
     return;
   }
-
-  const segments = parseVtt(result.vtt);
-  if (!segments.length) {
-    console.warn(`[pipeline] transcript for ${onlineMeetingId} parsed to zero segments`);
-    return;
+  if (claim.status === "in-progress") {
+    // Throw, don't return: if the invocation that holds the claim dies, nothing
+    // else would ever publish this. The queue retries this copy in ~5 minutes;
+    // by then the other one has finished (-> "already processed") or its stale
+    // claim can be taken over.
+    throw new Error(
+      `${onlineMeetingId}/${result.transcriptId} is being processed by another invocation`
+    );
   }
 
-  const plainText = segmentsToPlainText(segments);
-  console.log(`[pipeline] summarizing ${segments.length} segments via Claude`);
-  const summary = await summarizeTranscript(meetingSubject, plainText);
+  try {
+    const segments = parseVtt(result.vtt);
+    if (!segments.length) {
+      console.warn(`[pipeline] transcript for ${onlineMeetingId} parsed to zero segments`);
+      await releaseClaim(userId, onlineMeetingId, result.transcriptId, claim.etag);
+      return;
+    }
 
-  const metadata = await getMeetingMetadata(userId, onlineMeetingId, meetingStartIso);
-  // The transcript's callId pins the recording message in the (series-shared)
-  // meeting chat to this occurrence. "" when there's no recording or no access.
-  const recordingUrl = await getRecordingUrl(
-    metadata.chatId,
-    result.callId ?? "",
-    meetingStartIso
-  );
+    const plainText = segmentsToPlainText(segments);
+    console.log(`[pipeline] summarizing ${segments.length} segments via Claude`);
+    const summary = await summarizeTranscript(meetingSubject, plainText);
 
-  const { folderPath } = await publishMeetingDocs({
-    meetingSubject,
-    meetingDateIso: meetingStartIso,
-    segments,
-    summary,
-    recordingLink: recordingUrl,
-    organizerName: metadata.organizerName,
-    organizerEmail: metadata.organizerEmail,
-  });
+    const metadata = await getMeetingMetadata(userId, onlineMeetingId, meetingStartIso);
+    // The transcript's callId pins the recording message in the (series-shared)
+    // meeting chat to this occurrence. "" when there's no recording or no access.
+    const recordingUrl = await getRecordingUrl(
+      metadata.chatId,
+      result.callId ?? "",
+      meetingStartIso
+    );
 
-  await markProcessed(userId, onlineMeetingId, result.transcriptId);
+    const { folderPath } = await publishMeetingDocs({
+      meetingSubject,
+      meetingDateIso: meetingStartIso,
+      segments,
+      summary,
+      recordingLink: recordingUrl,
+      organizerName: metadata.organizerName,
+      organizerEmail: metadata.organizerEmail,
+    });
 
-  console.log(
-    `[pipeline] done. Published to ${folderPath} — ${summary.action_items.length} action item(s), ` +
-      `${summary.decisions.length} decision(s).`
-  );
+    await markProcessed(userId, onlineMeetingId, result.transcriptId);
+
+    console.log(
+      `[pipeline] done. Published to ${folderPath} — ${summary.action_items.length} action item(s), ` +
+        `${summary.decisions.length} decision(s).`
+    );
+  } catch (err) {
+    // Hand the claim back so the queue's retry can proceed immediately instead
+    // of finding it "in progress" for the next 12 minutes.
+    await releaseClaim(userId, onlineMeetingId, result.transcriptId, claim.etag).catch((releaseErr) =>
+      console.warn(`[pipeline] could not release claim for ${onlineMeetingId}:`, releaseErr)
+    );
+    throw err;
+  }
 }

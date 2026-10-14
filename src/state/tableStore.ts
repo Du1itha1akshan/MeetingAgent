@@ -76,21 +76,78 @@ export async function putSubscriptionRecord(record: SubscriptionRecord): Promise
  * and the queue trigger retries on transient failure without re-running work
  * that already succeeded.
  */
-export async function isAlreadyProcessed(
+// Longer than the function timeout (host.json: 10 min), so a claim older than
+// this belongs to an invocation that died without releasing it.
+const CLAIM_STALE_MS = 12 * 60_000;
+
+export type ClaimResult =
+  | { status: "claimed"; etag: string } // we own it: publish, then markProcessed (or releaseClaim on failure)
+  | { status: "done" } // already published
+  | { status: "in-progress" }; // another invocation is publishing it right now
+
+/**
+ * Atomically claims a transcript before anything is published. Creating the row
+ * fails with 409 if it already exists, so of two concurrent copies of the same
+ * job (Graph delivering a notification twice) exactly one gets to publish —
+ * the other can't race it into a GitHub write conflict or duplicate issues.
+ *
+ * Rows from before claims existed have `processedAt` and no `state`; they count
+ * as done. A claim stuck past CLAIM_STALE_MS (the owner crashed) can be taken over.
+ */
+export async function claimTranscript(
   userId: string,
   meetingId: string,
   transcriptId: string
-): Promise<boolean> {
+): Promise<ClaimResult> {
   const client = await getTableClient(PROCESSED_TABLE);
-  try {
-    await client.getEntity(userId, `${meetingId}_${transcriptId}`);
-    return true;
-  } catch (err: any) {
-    if (err.statusCode === 404) return false;
-    throw err;
+  const rowKey = `${meetingId}_${transcriptId}`;
+
+  // Two passes: the row can vanish between our 409 and our read if its owner
+  // released it, in which case we just try to create it again.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const claimedAt = new Date().toISOString();
+    try {
+      const created = await client.createEntity({
+        partitionKey: userId,
+        rowKey,
+        state: "claimed",
+        claimedAt,
+      });
+      return { status: "claimed", etag: created.etag! };
+    } catch (err: any) {
+      if (err.statusCode !== 409) throw err;
+    }
+
+    let entity;
+    try {
+      entity = await client.getEntity<{ state?: string; claimedAt?: string }>(userId, rowKey);
+    } catch (err: any) {
+      if (err.statusCode === 404) continue; // released in the meantime
+      throw err;
+    }
+
+    if (entity.state !== "claimed") return { status: "done" };
+
+    const ageMs = Date.now() - new Date(entity.claimedAt ?? 0).getTime();
+    if (ageMs < CLAIM_STALE_MS) return { status: "in-progress" };
+
+    // Stale: take it over, but only if nobody touched it since we read it.
+    try {
+      const taken = await client.updateEntity(
+        { partitionKey: userId, rowKey, state: "claimed", claimedAt },
+        "Replace",
+        { etag: entity.etag }
+      );
+      return { status: "claimed", etag: taken.etag! };
+    } catch (err: any) {
+      if (err.statusCode === 412 || err.statusCode === 404) return { status: "in-progress" };
+      throw err;
+    }
   }
+  return { status: "in-progress" };
 }
 
+/** Marks the claimed transcript as published. */
 export async function markProcessed(
   userId: string,
   meetingId: string,
@@ -101,10 +158,30 @@ export async function markProcessed(
     {
       partitionKey: userId,
       rowKey: `${meetingId}_${transcriptId}`,
+      state: "done",
       processedAt: new Date().toISOString(),
     },
     "Replace"
   );
+}
+
+/**
+ * Gives a claim back after a failure so the queue's retry can take it right
+ * away instead of finding it "in progress". Uses the claim's etag so it can
+ * never delete a claim someone else has since taken over.
+ */
+export async function releaseClaim(
+  userId: string,
+  meetingId: string,
+  transcriptId: string,
+  etag: string
+): Promise<void> {
+  const client = await getTableClient(PROCESSED_TABLE);
+  try {
+    await client.deleteEntity(userId, `${meetingId}_${transcriptId}`, { etag });
+  } catch (err: any) {
+    if (err.statusCode !== 404 && err.statusCode !== 412) throw err;
+  }
 }
 
 /**

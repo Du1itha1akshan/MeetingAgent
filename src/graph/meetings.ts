@@ -1,4 +1,4 @@
-import { graphFetch } from "./auth";
+import { graphFetch, isNotAccessible } from "./auth";
 import { getConfig } from "../config";
 
 interface MeetingIdentity {
@@ -43,6 +43,7 @@ export async function getOnlineMeeting(onlineMeetingId: string): Promise<OnlineM
   );
 
   let lastErr: unknown;
+  let transientErr: unknown; // anything other than 403/404 deserves a retry, so don't let a later 404 hide it
   for (const user of candidates) {
     try {
       return await graphFetch<OnlineMeeting>(
@@ -50,9 +51,54 @@ export async function getOnlineMeeting(onlineMeetingId: string): Promise<OnlineM
       );
     } catch (err) {
       lastErr = err;
+      if (!isNotAccessible(err)) transientErr ??= err;
     }
   }
-  throw lastErr ?? new Error(`No user available to look up meeting ${onlineMeetingId}`);
+  throw transientErr ?? lastErr ?? new Error(`No user available to look up meeting ${onlineMeetingId}`);
+}
+
+/**
+ * Turns a raw tenant-wide transcript notification into a ready-to-process job,
+ * or null if it isn't for us. Runs in the queue function (not the webhook) so
+ * the webhook can answer Graph within its few-second limit.
+ *
+ * Returns null — drop quietly, no retry — when no monitored user is the
+ * organizer or an attendee, or when Graph says the meeting can't be read (403/404:
+ * a meeting we aren't part of). Anything else (timeouts, 5xx, a transcript that
+ * isn't listable yet) throws, so the queue retries it.
+ */
+export async function resolveTranscriptNotification(
+  meetingId: string,
+  transcriptId: string
+): Promise<{
+  userId: string;
+  meetingSubject: string;
+  meetingStartIso: string;
+} | null> {
+  let meeting: OnlineMeeting;
+  try {
+    meeting = await getOnlineMeeting(meetingId);
+  } catch (err) {
+    if (isNotAccessible(err)) return null;
+    throw err;
+  }
+
+  const monitoredUser = await findInvolvedMonitoredUser(meeting);
+  if (!monitoredUser) return null;
+
+  // meeting.startDateTime is the start of a recurring SERIES, not of this
+  // occurrence, so using it dated every occurrence as the first one and made
+  // them overwrite each other's folder. The notification is for one specific
+  // transcript, so use when that transcript was created instead.
+  const transcript = await graphFetch<{ createdDateTime: string }>(
+    `/users/${encodeURIComponent(monitoredUser)}/onlineMeetings/${meetingId}/transcripts/${transcriptId}`
+  );
+
+  return {
+    userId: monitoredUser, // transcripts are fetched under the assistant, as in the poll path
+    meetingSubject: meeting.subject ?? "Untitled meeting",
+    meetingStartIso: transcript.createdDateTime,
+  };
 }
 
 /**

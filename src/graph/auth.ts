@@ -55,6 +55,19 @@ export async function getGraphToken(): Promise<string> {
   return cachedToken.value;
 }
 
+/** A failed Graph call, carrying the HTTP status so callers can tell "not allowed / not found" from transient errors. */
+export class GraphApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "GraphApiError";
+  }
+}
+
+/** 403/404: the app can't see this resource (e.g. a meeting it isn't part of). Retrying won't change that. */
+export function isNotAccessible(err: unknown): boolean {
+  return err instanceof GraphApiError && (err.status === 403 || err.status === 404);
+}
+
 export async function graphFetch<T = any>(
   path: string,
   init: RequestInit = {}
@@ -75,7 +88,10 @@ export async function graphFetch<T = any>(
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Graph API ${init.method ?? "GET"} ${url} failed: ${res.status} ${body}`);
+    throw new GraphApiError(
+      `Graph API ${init.method ?? "GET"} ${url} failed: ${res.status} ${body}`,
+      res.status
+    );
   }
 
   const contentType = res.headers.get("content-type") ?? "";

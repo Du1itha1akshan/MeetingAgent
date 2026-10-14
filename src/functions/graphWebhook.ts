@@ -1,8 +1,6 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { getConfig } from "../config";
-import { graphFetch } from "../graph/auth";
-import { getOnlineMeeting, findInvolvedMonitoredUser } from "../graph/meetings";
-import { enqueueTranscriptReady } from "../state/queueStore";
+import { enqueueTranscriptNotification } from "../state/queueStore";
 
 interface GraphNotification {
   subscriptionId: string;
@@ -19,6 +17,14 @@ function parseIds(resource: string): { meetingId: string; transcriptId: string }
   return { meetingId: meeting[1], transcriptId: transcript[1] };
 }
 
+/**
+ * Deliberately does almost nothing: Graph hangs up (and retries, producing
+ * duplicate jobs) if it isn't answered within a few seconds, and a cold start
+ * plus Graph lookups can exceed that. The subscription is tenant-wide, so every
+ * meeting's transcript lands here; deciding whether the JRC Meeting Assistant is
+ * part of it needs Graph calls, so that happens in processTranscriptQueue, which
+ * has minutes to work instead of seconds.
+ */
 export async function graphWebhookHandler(
   req: HttpRequest,
   context: InvocationContext
@@ -44,33 +50,17 @@ export async function graphWebhookHandler(
       context.warn(`[webhook] unrecognized resource format: ${notification.resource}`);
       continue;
     }
-    const { meetingId, transcriptId } = ids;
 
     try {
-      // The subscription is tenant-wide, so every meeting's transcript lands
-      // here. Graph can't filter by attendee, so drop anything the JRC Meeting
-      // Assistant isn't part of before it costs a queue message or a Claude call.
-      const meeting = await getOnlineMeeting(meetingId);
-      const monitoredUser = await findInvolvedMonitoredUser(meeting);
-      if (!monitoredUser) continue;
-
-      // meeting.startDateTime is the start of a recurring SERIES, not of this
-      // occurrence, so using it dated every occurrence as the first one and made
-      // them overwrite each other's folder. The notification is for one specific
-      // transcript, so use when that transcript was created instead.
-      const transcript = await graphFetch<{ createdDateTime: string }>(
-        `/users/${encodeURIComponent(monitoredUser)}/onlineMeetings/${meetingId}/transcripts/${transcriptId}`
+      const messageId = await enqueueTranscriptNotification(ids.meetingId, ids.transcriptId);
+      // Graph can deliver the same notification twice, so record which
+      // invocation queued which message.
+      context.log(
+        `[webhook] queued message ${messageId} for meeting ${ids.meetingId} ` +
+          `(transcript ${ids.transcriptId}) from invocation ${context.invocationId}`
       );
-
-      await enqueueTranscriptReady({
-        userId: monitoredUser, // transcripts are fetched under the assistant, as in the poll path
-        onlineMeetingId: meetingId,
-        meetingSubject: meeting.subject ?? "Untitled meeting",
-        meetingStartIso: transcript.createdDateTime,
-        source: "webhook",
-      });
     } catch (err) {
-      context.error(`[webhook] failed to process meeting ${meetingId}:`, err);
+      context.error(`[webhook] failed to queue meeting ${ids.meetingId}:`, err);
       // Swallow: returning 5xx here would make Graph retry the whole batch.
       // The polling fallback will pick this meeting up within its lookback window.
     }
