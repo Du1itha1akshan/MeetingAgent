@@ -1,5 +1,5 @@
 import * as dotenv from "dotenv";
-import { DefaultAzureCredential } from "@azure/identity";
+import { DefaultAzureCredential, ManagedIdentityCredential } from "@azure/identity";
 import { SecretClient } from "@azure/keyvault-secrets";
 
 dotenv.config();
@@ -41,7 +41,18 @@ async function loadSecrets(): Promise<Record<string, string>> {
   const vaultUri = process.env.KEY_VAULT_URI;
   if (!vaultUri) return {};
 
-  const credential = new DefaultAzureCredential();
+  // In Azure, authenticate as the Function App's system-assigned managed identity,
+  // the principal infra/main.bicep grants "Key Vault Secrets User". DefaultAzureCredential
+  // can't do that here: this app has AZURE_CLIENT_ID / AZURE_CLIENT_SECRET /
+  // AZURE_TENANT_ID set (for the Graph app registration), so it signs in as that app
+  // registration (EnvironmentCredential, no vault role -> "Caller is not authorized"),
+  // and if the secret is absent it passes AZURE_CLIENT_ID to the managed-identity step
+  // as a *user-assigned* identity id ("No User Assigned ... Managed Identity found").
+  // IDENTITY_ENDPOINT is set by Azure when a managed identity is enabled; locally it's
+  // absent and DefaultAzureCredential (az login / env vars) is used as before.
+  const credential = process.env.IDENTITY_ENDPOINT
+    ? new ManagedIdentityCredential()
+    : new DefaultAzureCredential();
   const client = new SecretClient(vaultUri, credential);
 
   const names = [
@@ -111,6 +122,14 @@ async function buildConfig(): Promise<AppConfig> {
 }
 
 export function getConfig(): Promise<AppConfig> {
-  if (!cached) cached = buildConfig();
+  if (!cached) {
+    cached = buildConfig().catch((err) => {
+      // Don't keep a failed load: a rejected promise cached here would make every
+      // later call fail until the process restarts, even after the cause is fixed
+      // (e.g. a missing setting that has since been added).
+      cached = null;
+      throw err;
+    });
+  }
   return cached;
 }
