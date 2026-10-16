@@ -10,10 +10,13 @@
     "githubRepo": { "value": "meeting-notes" },
     "githubBranch": { "value": "main" },
     "githubBasePath": { "value": "meetings" },
-    "createIssuesForActionItems": { "value": true },
+    "createIssuesForActionItems": { "value": false },
     "githubAppId": { "value": "123456" },
     "githubAppInstallationId": { "value": "987654" },
-    "pollLookbackMinutes": { "value": 20 }
+    "pollLookbackMinutes": { "value": 20 },
+    "greetingEnabled": { "value": false },
+    "assistantUsername": { "value": "assistant@contoso.com" },
+    "startTranscriptionOnYes": { "value": false }
 
     // azureClientSecret, graphClientState, anthropicApiKey, githubAppPrivateKey
     // are @secure() and deliberately NOT here — scripts/deploy.ps1 passes them

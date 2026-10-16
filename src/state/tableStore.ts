@@ -246,6 +246,113 @@ export async function deletePendingRecord(onlineMeetingId: string): Promise<void
   }
 }
 
+const GREETED_TABLE = "MeetingAgentGreeted";
+
+/**
+ * Claims the right to greet one meeting occurrence. Creating the row fails with
+ * 409 if it already exists, so across poll runs (and any two instances) exactly one
+ * caller gets `true` and the assistant posts to a given meeting only once.
+ * `key` must be a table-safe string (src/greeting.ts passes a hash).
+ */
+export async function claimGreeting(key: string): Promise<boolean> {
+  const client = await getTableClient(GREETED_TABLE);
+  try {
+    await client.createEntity({
+      partitionKey: "greeted",
+      rowKey: key,
+      claimedAt: new Date().toISOString(),
+    });
+    return true;
+  } catch (err: any) {
+    if (err.statusCode === 409) return false;
+    throw err;
+  }
+}
+
+/** Gives the claim back (used when nothing was posted, so a later poll run may try again). */
+export async function releaseGreeting(key: string): Promise<void> {
+  const client = await getTableClient(GREETED_TABLE);
+  try {
+    await client.deleteEntity("greeted", key);
+  } catch (err: any) {
+    if (err.statusCode !== 404) throw err;
+  }
+}
+
+/**
+ * What happened after the assistant asked "Shall I start transcription?" in a
+ * meeting's chat (src/transcriptionQuestion.ts). Stored on the same row as the
+ * greeting claim. `status` moves along:
+ *   asked -> declined                          (someone replied "no")
+ *   asked -> manual                            (replied "yes", auto-start switched off)
+ *   asked -> joining -> starting -> started -> ended    (replied "yes", auto-start on)
+ *   joining/starting -> failed -> failed-notified       (couldn't start transcription)
+ *   asked -> expired                           (no answer in time, or the meeting ended)
+ */
+export interface TranscriptionQuestion {
+  key: string;
+  etag: string;
+  status?: string;
+  meetingSubject?: string;
+  meetingEnd?: string; // ISO, UTC
+  chatId?: string;
+  organizerId?: string;
+  questionMessageId?: string;
+  askedAt?: string; // ISO, UTC
+  assistantUserId?: string; // so the assistant's own messages are never read as an answer
+  callId?: string; // the app's call, once it joins the meeting to start transcription
+  decidedBy?: string;
+  decidedAt?: string;
+  note?: string;
+}
+
+type QuestionFields = Partial<Omit<TranscriptionQuestion, "key" | "etag">>;
+
+function toQuestion(entity: any): TranscriptionQuestion {
+  const { partitionKey, rowKey, etag, timestamp, claimedAt, ...rest } = entity;
+  return { key: rowKey, etag, ...rest };
+}
+
+/**
+ * Merges fields into a question row. With `etag`, only succeeds if nobody changed
+ * the row since it was read (false = someone else got there first), so two poll
+ * runs or a poll and a callback can't both act on the same answer.
+ */
+export async function updateQuestion(key: string, fields: QuestionFields, etag?: string): Promise<boolean> {
+  const client = await getTableClient(GREETED_TABLE);
+  try {
+    await client.updateEntity({ partitionKey: "greeted", rowKey: key, ...fields }, "Merge", etag ? { etag } : undefined);
+    return true;
+  } catch (err: any) {
+    if (err.statusCode === 412 || err.statusCode === 404) return false;
+    throw err;
+  }
+}
+
+/** Questions in any of the given states (the poll uses this to find work to do). */
+export async function listQuestions(statuses: string[]): Promise<TranscriptionQuestion[]> {
+  const client = await getTableClient(GREETED_TABLE);
+  const statusFilter = statuses.map((s) => `status eq '${s.replace(/'/g, "''")}'`).join(" or ");
+  const out: TranscriptionQuestion[] = [];
+  for await (const entity of client.listEntities({
+    queryOptions: { filter: `PartitionKey eq 'greeted' and (${statusFilter})` },
+  })) {
+    out.push(toQuestion(entity));
+  }
+  return out;
+}
+
+/** The question whose transcription call has this id, or null if the call isn't ours. */
+export async function findQuestionByCallId(callId: string): Promise<TranscriptionQuestion | null> {
+  const client = await getTableClient(GREETED_TABLE);
+  for await (const entity of client.listEntities({
+    queryOptions: { filter: `PartitionKey eq 'greeted' and callId eq '${callId.replace(/'/g, "''")}'` },
+  })) {
+    return toQuestion(entity);
+  }
+  return null;
+}
+
 export async function listPendingRecords(): Promise<PendingTranscriptRecord[]> {
   const client = await getTableClient(PENDING_TABLE);
   const records: PendingTranscriptRecord[] = [];

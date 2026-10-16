@@ -173,7 +173,15 @@ export async function publishMeetingDocs(params: {
   );
 
   if (config.github.createIssuesForActionItems && params.summary.action_items.length) {
-    await createIssuesForActionItems(params.summary, folderPath);
+    // The files above are already published, so a failure to open issues (Issues
+    // permission missing on the GitHub App, rate limit, ...) must not fail the whole
+    // run: that would retry and republish the same files, up to 5 times, and leave
+    // the meeting unmarked. Log it and carry on.
+    try {
+      await createIssuesForActionItems(params.summary, folderPath);
+    } catch (err) {
+      console.error(`[publisher] published ${folderPath} but could not create issues for its action items:`, err);
+    }
   }
 
   return { folderPath };

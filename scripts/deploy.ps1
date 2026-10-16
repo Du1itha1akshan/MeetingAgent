@@ -24,7 +24,20 @@
     -GithubOwner "your-org" -GithubRepo "meeting-notes" `
     -GithubAppId "123456" -GithubAppInstallationId "987654" `
     -GithubAppPrivateKeyPath "./github-app-key.pem" `
-    -MonitoredUsers "alice@contoso.com"
+    -MonitoredUsers "alice@contoso.com" `
+    -AssistantUsername "assistant@contoso.com" -GreetingEnabled $true
+
+  The last four parameters are optional. Each deployment sets these app settings
+  explicitly (overriding infra/main.parameters.json); anything left out is off/empty:
+    -AssistantUsername           ASSISTANT_USERNAME (passed here so it never has to be committed)
+    -GreetingEnabled             GREETING_ENABLED
+    -StartTranscriptionOnYes     START_TRANSCRIPTION_ON_YES
+    -CreateIssuesForActionItems  CREATE_ISSUES_FOR_ACTION_ITEMS
+
+  -CreateKeyVaultRoleAssignment $false: use when redeploying an environment whose
+  Function App identity already has "Key Vault Secrets User" on the vault from an
+  assignment made outside this template (otherwise the deployment fails with
+  RoleAssignmentExists). Defaults to $true for new environments.
 #>
 param(
   [Parameter(Mandatory = $true)] [string]$ResourceGroup,
@@ -44,11 +57,30 @@ param(
   [string]$GithubBranch = "main",
   [Parameter(Mandatory = $true)] [string]$GithubAppId,
   [Parameter(Mandatory = $true)] [string]$GithubAppInstallationId,
-  [Parameter(Mandatory = $true)] [string]$GithubAppPrivateKeyPath
+  [Parameter(Mandatory = $true)] [string]$GithubAppPrivateKeyPath,
+
+  [string]$AssistantUsername = "",
+  [bool]$GreetingEnabled = $false,
+  [bool]$StartTranscriptionOnYes = $false,
+  [bool]$CreateIssuesForActionItems = $false,
+
+  # $false when the Function App's identity already has "Key Vault Secrets User" on the
+  # vault from an assignment made outside this template (see infra/main.bicep).
+  [bool]$CreateKeyVaultRoleAssignment = $true
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+# The secrets are plain-text parameters. A SecureString (e.g. `Read-Host -AsSecureString`)
+# arrives here as the literal text "System.Security.SecureString", which would be written
+# into Key Vault and break the app, so stop before anything is deployed.
+foreach ($name in 'AzureClientSecret', 'GraphClientState', 'AnthropicApiKey') {
+  if ((Get-Variable $name -ValueOnly) -eq 'System.Security.SecureString') {
+    throw "-$name received a SecureString, which arrives as the text 'System.Security.SecureString'. " +
+      "Pass the secret as plain text, e.g. (az keyvault secret show --vault-name <vault> --name <secret> --query value -o tsv)."
+  }
+}
 
 # $ErrorActionPreference only catches terminating PowerShell errors, not the
 # exit code of native executables (npm, az, func) - without this check a
@@ -61,6 +93,7 @@ function Assert-LastExitCode($step) {
 }
 
 Write-Host "Building the Functions app..." -ForegroundColor Cyan
+$secretParamsFile = $null
 Push-Location $repoRoot
 try {
   npm install
@@ -81,25 +114,49 @@ try {
   }
 
   $githubAppPrivateKey = Get-Content -Raw -Path $GithubAppPrivateKeyPath
+  if ($githubAppPrivateKey -notmatch '-----BEGIN [A-Z ]*PRIVATE KEY-----' -or
+      $githubAppPrivateKey -notmatch '-----END [A-Z ]*PRIVATE KEY-----') {
+    throw "$GithubAppPrivateKeyPath doesn't look like a PEM private key (no BEGIN/END PRIVATE KEY lines)."
+  }
+
+  # The secrets reach az in a temporary parameters file, not on the command line. On
+  # Windows az is az.cmd, and an argument is cut off at its first line break: passed
+  # as an argument, the GitHub key was stored as just "-----BEGIN PRIVATE KEY-----".
+  # The file is written to the user's own temp folder and deleted in the finally block.
+  $secretParamsFile = Join-Path ([IO.Path]::GetTempPath()) ("meetingagent-secrets-" + [guid]::NewGuid().ToString("N") + ".json")
+  $secretParams = @{
+    '$schema'      = "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#"
+    contentVersion = "1.0.0.0"
+    parameters     = @{
+      azureClientSecret   = @{ value = $AzureClientSecret }
+      graphClientState    = @{ value = $GraphClientState }
+      anthropicApiKey     = @{ value = $AnthropicApiKey }
+      githubAppPrivateKey = @{ value = $githubAppPrivateKey }
+    }
+  }
+  # UTF-8 without a byte-order mark (Windows PowerShell's -Encoding UTF8 would add one).
+  [IO.File]::WriteAllText($secretParamsFile, ($secretParams | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding $false))
 
   Write-Host "`nDeploying infra/main.bicep..." -ForegroundColor Cyan
   $deployResult = az deployment group create `
     --resource-group $ResourceGroup `
     --template-file "infra/main.bicep" `
     --parameters "infra/main.parameters.json" `
+    --parameters "@$secretParamsFile" `
     --parameters baseName=$BaseName `
                  azureTenantId=$AzureTenantId `
                  azureClientId=$AzureClientId `
-                 azureClientSecret=$AzureClientSecret `
-                 graphClientState=$GraphClientState `
-                 anthropicApiKey=$AnthropicApiKey `
                  monitoredUsers=$MonitoredUsers `
                  githubOwner=$GithubOwner `
                  githubRepo=$GithubRepo `
                  githubBranch=$GithubBranch `
                  githubAppId=$GithubAppId `
                  githubAppInstallationId=$GithubAppInstallationId `
-                 githubAppPrivateKey=$githubAppPrivateKey `
+                 assistantUsername=$AssistantUsername `
+                 greetingEnabled=$($GreetingEnabled.ToString().ToLower()) `
+                 startTranscriptionOnYes=$($StartTranscriptionOnYes.ToString().ToLower()) `
+                 createIssuesForActionItems=$($CreateIssuesForActionItems.ToString().ToLower()) `
+                 createKeyVaultRoleAssignment=$($CreateKeyVaultRoleAssignment.ToString().ToLower()) `
     -o json | ConvertFrom-Json
   Assert-LastExitCode "az deployment group create"
 
@@ -131,5 +188,6 @@ try {
   Write-Host "`nThe pollTimer function runs every 5 minutes and will create the Graph"
   Write-Host "subscription on its first run - no separate 'start' step needed."
 } finally {
+  if ($secretParamsFile -and (Test-Path $secretParamsFile)) { Remove-Item $secretParamsFile -Force }
   Pop-Location
 }

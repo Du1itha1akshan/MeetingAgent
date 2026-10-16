@@ -65,14 +65,50 @@ token from the App's private key on every run.
 ./scripts/deploy.ps1 `
   -ResourceGroup "meeting-agent-rg" -BaseName "meetingagent" `
   -AzureTenantId "<from step 1>" -AzureClientId "<from step 1>" `
-  -AzureClientSecret (Read-Host -AsSecureString) `
-  -GraphClientState (Read-Host -AsSecureString) `
-  -AnthropicApiKey (Read-Host -AsSecureString) `
+  -AzureClientSecret "<client secret from step 1>" `
+  -GraphClientState "<graph client state from step 1>" `
+  -AnthropicApiKey "<your Anthropic API key>" `
   -MonitoredUsers "alice@contoso.com,bob@contoso.com" `
   -GithubOwner "your-org" -GithubRepo "meeting-notes" `
   -GithubAppId "<from step 3>" -GithubAppInstallationId "<from step 3>" `
-  -GithubAppPrivateKeyPath "./github-app-key.pem"
+  -GithubAppPrivateKeyPath "C:\path\outside\the\repo\github-app-key.pem" `
+  -AssistantUsername "assistant@contoso.com" `
+  -GreetingEnabled $false -StartTranscriptionOnYes $false -CreateIssuesForActionItems $false
 ```
+
+The last four parameters are optional and default to off/empty. Each run sets
+these app settings explicitly, overriding `infra/main.parameters.json`:
+
+| Parameter | App setting | Turn on when |
+| --- | --- | --- |
+| `-AssistantUsername` | `ASSISTANT_USERNAME` | always pass it if the assistant posts to chats; passed here so it never has to be committed |
+| `-GreetingEnabled $true` | `GREETING_ENABLED` | the `ChatMessage.Send` consent and the `assistant-password` / `assistant-refresh-token` Key Vault secrets exist |
+| `-StartTranscriptionOnYes $true` | `START_TRANSCRIPTION_ON_YES` | `Calls.JoinGroupCall.All` is consented and the app is registered as a calling bot |
+| `-CreateIssuesForActionItems $true` | `CREATE_ISSUES_FOR_ACTION_ITEMS` | the target repository is private |
+
+`-CreateKeyVaultRoleAssignment` (default `$true`) controls whether the template grants
+the Function App's identity "Key Vault Secrets User" on the vault. Pass `$false` when
+redeploying an environment where that role was already granted by hand: Azure rejects
+a second, identical assignment with `RoleAssignmentExists`, which would stop the
+deployment after the Function App's settings were already replaced and before the code
+is republished.
+
+The secrets are passed as plain text (that's the type `deploy.ps1` expects; a
+`Read-Host -AsSecureString` value would arrive as the literal text
+"System.Security.SecureString"). Typed into the command, they end up in PowerShell's
+history, so never commit or share the filled-in command, and once Key Vault exists
+prefer reading them from it at run time:
+
+```powershell
+-AzureClientSecret (az keyvault secret show --vault-name <vault> --name azure-client-secret --query value -o tsv)
+```
+
+**Re-running this on an existing deployment:** the Bicep step rewrites the four
+Key Vault secrets from the values you pass, so pass the current ones exactly, and
+it replaces the Function App's whole list of app settings (anything added by hand
+that isn't in `infra/main.bicep` is removed). The app is briefly unavailable between
+the Bicep step and the code publish that follows it. Keep the `.pem` file outside
+the repository and delete it afterwards.
 
 This provisions Key Vault, Storage, Application Insights, and a Linux
 Consumption Function App (`infra/main.bicep`), wires the webhook URL back

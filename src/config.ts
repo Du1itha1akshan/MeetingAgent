@@ -21,6 +21,28 @@ export interface AppConfig {
   };
   poll: { lookbackMinutes: number };
   storage: { connectionString: string };
+  /** The JRC Meeting Assistant posting to meeting chats as itself (src/greeting.ts). Off unless GREETING_ENABLED=true. */
+  assistant: {
+    greetingEnabled: boolean;
+    username: string; // the assistant's UPN; the password and refresh token live in Key Vault (src/graph/assistantAuth.ts)
+    scope: string;
+    message: string; // HTML
+  };
+  /** Acting on the yes/no answer to the greeting's question (src/transcriptionQuestion.ts). */
+  transcription: {
+    startOnYes: boolean; // "yes" makes the app join the call and start transcription (needs the calling setup)
+    callbackUrl: string; // where Graph reports the app's call events (functions/callsCallback.ts)
+    answerWindowMinutes: number; // how long after asking a reply still counts
+  };
+}
+
+/** The calls callback lives on the same host as the Graph webhook. */
+function defaultCallsCallbackUrl(notificationUrl: string): string {
+  try {
+    return `${new URL(notificationUrl).origin}/api/calls/callback`;
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -31,29 +53,55 @@ export interface AppConfig {
  */
 let cached: Promise<AppConfig> | null = null;
 
+// What the JRC Meeting Assistant posts in a meeting's chat once the meeting has started
+// (src/greeting.ts). HTML. Override without a redeploy with the GREETING_MESSAGE setting.
+const DEFAULT_GREETING_MESSAGE =
+  "<p>👋 Hi, I'm the <b>JRC Meeting Assistant</b>. Shall I start transcription? " +
+  "A summary and action items will be saved to our GitHub repo.</p>" +
+  "<p>Reply <b>yes</b> or <b>no</b>.</p>";
+
 function required(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required env var: ${name}`);
   return v;
 }
 
+/**
+ * A true/false setting. Case-insensitive on purpose: Bicep/ARM write a boolean
+ * parameter into an app setting as "True"/"False", and an exact `=== "true"` check
+ * silently treated that as off (so CREATE_ISSUES_FOR_ACTION_ITEMS=True never
+ * created any issues). Missing or empty means `defaultValue`; any other text that
+ * isn't "true" (a typo, say) means off.
+ */
+function envFlag(name: string, defaultValue: boolean): boolean {
+  const v = process.env[name]?.trim().toLowerCase();
+  if (v === undefined || v === "") return defaultValue;
+  return v === "true";
+}
+
+/**
+ * The credential for talking to Key Vault. In Azure, authenticate as the Function
+ * App's system-assigned managed identity, the principal infra/main.bicep grants
+ * "Key Vault Secrets User". DefaultAzureCredential can't do that here: this app has
+ * AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID set (for the Graph app
+ * registration), so it signs in as that app registration (EnvironmentCredential, no
+ * vault role -> "Caller is not authorized"), and if the secret is absent it passes
+ * AZURE_CLIENT_ID to the managed-identity step as a *user-assigned* identity id
+ * ("No User Assigned ... Managed Identity found"). IDENTITY_ENDPOINT is set by Azure
+ * when a managed identity is enabled; locally it's absent and DefaultAzureCredential
+ * (az login / env vars) is used as before.
+ */
+export function createVaultCredential() {
+  return process.env.IDENTITY_ENDPOINT
+    ? new ManagedIdentityCredential()
+    : new DefaultAzureCredential();
+}
+
 async function loadSecrets(): Promise<Record<string, string>> {
   const vaultUri = process.env.KEY_VAULT_URI;
   if (!vaultUri) return {};
 
-  // In Azure, authenticate as the Function App's system-assigned managed identity,
-  // the principal infra/main.bicep grants "Key Vault Secrets User". DefaultAzureCredential
-  // can't do that here: this app has AZURE_CLIENT_ID / AZURE_CLIENT_SECRET /
-  // AZURE_TENANT_ID set (for the Graph app registration), so it signs in as that app
-  // registration (EnvironmentCredential, no vault role -> "Caller is not authorized"),
-  // and if the secret is absent it passes AZURE_CLIENT_ID to the managed-identity step
-  // as a *user-assigned* identity id ("No User Assigned ... Managed Identity found").
-  // IDENTITY_ENDPOINT is set by Azure when a managed identity is enabled; locally it's
-  // absent and DefaultAzureCredential (az login / env vars) is used as before.
-  const credential = process.env.IDENTITY_ENDPOINT
-    ? new ManagedIdentityCredential()
-    : new DefaultAzureCredential();
-  const client = new SecretClient(vaultUri, credential);
+  const client = new SecretClient(vaultUri, createVaultCredential());
 
   const names = [
     "azure-client-secret",
@@ -110,14 +158,29 @@ async function buildConfig(): Promise<AppConfig> {
       repo: required("GITHUB_REPO"),
       branch: process.env.GITHUB_BRANCH ?? "main",
       basePath: process.env.GITHUB_BASE_PATH ?? "meetings",
-      createIssuesForActionItems:
-        (process.env.CREATE_ISSUES_FOR_ACTION_ITEMS ?? "true") === "true",
+      createIssuesForActionItems: envFlag("CREATE_ISSUES_FOR_ACTION_ITEMS", true),
       appId: required("GITHUB_APP_ID"),
       appPrivateKey: githubPrivateKey.replace(/\\n/g, "\n"),
       installationId: required("GITHUB_APP_INSTALLATION_ID"),
     },
     poll: { lookbackMinutes: Number(process.env.POLL_LOOKBACK_MINUTES ?? 20) },
     storage: { connectionString: required("AzureWebJobsStorage") },
+    assistant: {
+      // Off unless set to "true" (any letter case); a missing or mistyped value means off.
+      greetingEnabled: envFlag("GREETING_ENABLED", false),
+      username: process.env.ASSISTANT_USERNAME ?? "",
+      scope:
+        process.env.ASSISTANT_SCOPE ?? "https://graph.microsoft.com/ChatMessage.Send offline_access",
+      message: process.env.GREETING_MESSAGE ?? DEFAULT_GREETING_MESSAGE,
+    },
+    transcription: {
+      // Off unless "true": until the calling permission and bot registration exist,
+      // a "yes" gets a message pointing people to Teams' own Start transcription.
+      startOnYes: envFlag("START_TRANSCRIPTION_ON_YES", false),
+      callbackUrl:
+        process.env.CALLS_CALLBACK_URL ?? defaultCallsCallbackUrl(process.env.NOTIFICATION_URL ?? ""),
+      answerWindowMinutes: Number(process.env.TRANSCRIPTION_ANSWER_WINDOW_MINUTES ?? 15),
+    },
   };
 }
 

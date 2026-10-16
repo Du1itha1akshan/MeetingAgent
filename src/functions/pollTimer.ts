@@ -4,6 +4,8 @@ import { listScheduledTeamsMeetings, resolveOnlineMeetingId } from "../graph/cal
 import { listTranscripts, isTranscriptForOccurrence } from "../graph/transcripts";
 import { ensureTenantSubscription } from "../graph/subscriptions";
 import { enqueueTranscriptReady } from "../state/queueStore";
+import { greetMeetingIfStarted } from "../greeting";
+import { processTranscriptionQuestions } from "../transcriptionQuestion";
 import {
   getPendingRecord,
   putPendingRecord,
@@ -105,6 +107,10 @@ export async function pollTimerHandler(_timer: Timer, context: InvocationContext
     }
 
     for (const meeting of meetings) {
+      // A meeting that's under way gets the assistant's greeting (a no-op unless
+      // GREETING_ENABLED=true; never throws, so it can't affect processing below).
+      await greetMeetingIfStarted(meeting, now);
+
       if (new Date(meeting.end) > now) continue; // still in progress
 
       try {
@@ -144,6 +150,10 @@ export async function pollTimerHandler(_timer: Timer, context: InvocationContext
       }
     }
   }
+
+  // Answers to the greeting's "Shall I start transcription?" question, and any
+  // transcription calls in progress. Never throws.
+  await processTranscriptionQuestions(now);
 }
 
 app.timer("pollTimer", {

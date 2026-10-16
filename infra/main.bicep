@@ -39,7 +39,7 @@ param githubOwner string
 param githubRepo string
 param githubBranch string = 'main'
 param githubBasePath string = 'meetings'
-param createIssuesForActionItems bool = true
+param createIssuesForActionItems bool = false
 
 @description('GitHub App ID (see docs/SETUP.md for creating the App).')
 param githubAppId string
@@ -52,6 +52,18 @@ param githubAppPrivateKey string
 param githubAppInstallationId string
 
 param pollLookbackMinutes int = 20
+
+@description('Lets the JRC Meeting Assistant post a message in a meeting chat once the meeting has started (src/greeting.ts). Off by default.')
+param greetingEnabled bool = false
+
+@description('UPN of the JRC Meeting Assistant user that posts the message. Its password and refresh token are Key Vault secrets (assistant-password, assistant-refresh-token) that are deliberately NOT created here: the app rewrites the refresh token after every sign-in, and a deployment would overwrite it with whatever value this template holds.')
+param assistantUsername string = ''
+
+@description('When someone answers "yes" to the assistant\'s question, join the meeting call and start Teams transcription (src/transcriptionQuestion.ts). Needs the Calls.JoinGroupCall.All permission and a calling bot registration; off by default.')
+param startTranscriptionOnYes bool = false
+
+@description('Create the Function App identity\'s "Key Vault Secrets User" role assignment. Leave true for a new environment. Set false where the identity already has that role under another assignment (e.g. granted by hand): Azure rejects a second, identical assignment with RoleAssignmentExists, which would fail the deployment after the Function App was already updated.')
+param createKeyVaultRoleAssignment bool = true
 
 // ---- Storage: Functions runtime + Table/Queue state store ----
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
@@ -136,6 +148,12 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   location: location
   kind: 'functionapp,linux'
   identity: { type: 'SystemAssigned' }
+  // The portal finds the app's Application Insights through this tag. Declared here so a
+  // deployment keeps it (a resource's tags are replaced by the template's); the value is
+  // built in the same form the portal wrote it, so the deployment doesn't rewrite it.
+  tags: {
+    'hidden-link: /app-insights-resource-id': '/subscriptions/${subscription().subscriptionId}/resourceGroups/${resourceGroup().name}/providers/microsoft.insights/components/${appInsights.name}'
+  }
   properties: {
     serverFarmId: hostingPlan.id
     httpsOnly: true
@@ -157,10 +175,14 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'GITHUB_REPO', value: githubRepo }
         { name: 'GITHUB_BRANCH', value: githubBranch }
         { name: 'GITHUB_BASE_PATH', value: githubBasePath }
-        { name: 'CREATE_ISSUES_FOR_ACTION_ITEMS', value: string(createIssuesForActionItems) }
+        { name: 'CREATE_ISSUES_FOR_ACTION_ITEMS', value: toLower(string(createIssuesForActionItems)) }
         { name: 'GITHUB_APP_ID', value: githubAppId }
         { name: 'GITHUB_APP_INSTALLATION_ID', value: githubAppInstallationId }
         { name: 'POLL_LOOKBACK_MINUTES', value: string(pollLookbackMinutes) }
+        // toLower: Bicep renders a bool as 'True'/'False', but the app only accepts the exact text 'true'.
+        { name: 'GREETING_ENABLED', value: toLower(string(greetingEnabled)) }
+        { name: 'ASSISTANT_USERNAME', value: assistantUsername }
+        { name: 'START_TRANSCRIPTION_ON_YES', value: toLower(string(startTranscriptionOnYes)) }
       ]
     }
   }
@@ -169,7 +191,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
 // ---- RBAC: let the Function App's managed identity read the 4 app secrets ----
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 
-resource kvRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource kvRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (createKeyVaultRoleAssignment) {
   scope: keyVault
   name: guid(keyVault.id, functionApp.id, keyVaultSecretsUserRoleId)
   properties: {
