@@ -8,5 +8,6 @@ github-app-key.pem
 *.pem
 
 .vscode/
+.claude/
 bin/
 obj/
