@@ -133,8 +133,6 @@ h1 { font-size: 30px; line-height: 1.25; font-weight: 600; letter-spacing: -0.01
 .btn-sm { height: 40px; padding: 0 16px; font-size: 14px; }
 .btn-outline { background: var(--surface); border-color: var(--border-strong); }
 .btn-outline:hover { background: #f9fafb; }
-.btn-dark { background: var(--dark); color: #fff; }
-.btn-dark:hover { background: #1f2937; }
 .btn-primary { background: var(--blue); color: #fff; }
 .btn-primary:hover { background: var(--blue-hover); }
 
@@ -145,16 +143,36 @@ h1 { font-size: 30px; line-height: 1.25; font-weight: 600; letter-spacing: -0.01
 .card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 26px 28px; }
 .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
-.badge {
-  flex: none;
-  padding: 3px 10px;
+
+/* ---- Dropdown menus (settings, transcript download) ---- */
+.menu-wrap { position: relative; }
+.menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  min-width: 200px;
+  padding: 6px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  background: #f1f2f4;
-  color: var(--text-2);
-  font-size: 12px;
-  font-weight: 500;
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.12);
 }
+/* Sits directly on the button's bottom border. */
+.menu-attached { top: 100%; }
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font-size: 14px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.menu-item:hover, .menu-item:focus-visible { background: #f3f4f6; outline: none; }
 
 /* ---- Summary ---- */
 .summary-text { max-width: 660px; margin-top: 18px; color: #1f2937; line-height: 1.55; }

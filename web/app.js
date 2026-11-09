@@ -212,15 +212,155 @@
     return parts;
   }
 
-  function downloadTranscript() {
+  const fileName = (kind, extension) => `${meeting.title.replace(/[\\/:*?"<>|]/g, "-")} ${kind}.${extension}`;
+
+  function downloadTranscriptText() {
     const text = meeting.transcript.map((line) => `[${line.time}] ${line.speaker}: ${line.text}`).join("\n");
     const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
     const link = el("a");
     link.href = url;
-    link.download = `${meeting.title.replace(/[\\/:*?"<>|]/g, "-")} transcript.txt`;
+    link.download = fileName("transcript", "txt");
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+
+  // jsPDF is loaded only when someone downloads a PDF. The integrity hash makes the
+  // browser refuse the file if it isn't exactly jsPDF 3.0.1 as published.
+  let jsPdfLoading;
+  function loadJsPdf() {
+    jsPdfLoading ??= new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/3.0.1/jspdf.umd.min.js";
+      script.integrity = "sha384-ytX5osgYad9GPnagB0k+CxKTir/bsE7AfpzvCnQ7owfeWuDd+2l2y0PSIqRK+z/2";
+      script.crossOrigin = "anonymous";
+      script.onload = () => resolve(window.jspdf.jsPDF);
+      script.onerror = () => {
+        jsPdfLoading = undefined;
+        reject(new Error("jsPDF didn't load"));
+      };
+      document.head.append(script);
+    });
+    return jsPdfLoading;
+  }
+
+  // Builds an A4 PDF and saves it. `fill` adds the content through
+  // write(text, size, bold, gapAfter) and space(points); the meeting's title and date always come first.
+  async function savePdf(name, fill) {
+    let jsPDF;
+    try {
+      jsPDF = await loadJsPdf();
+    } catch {
+      alert("The PDF couldn't be created. Check your connection and try again.");
+      return;
+    }
+
+    // 48pt margins; text wraps to the page width and flows onto new pages.
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const margin = 48;
+    const width = doc.internal.pageSize.getWidth() - margin * 2;
+    const bottom = doc.internal.pageSize.getHeight() - margin;
+    let y = margin;
+    const write = (text, size, bold, gapAfter) => {
+      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFontSize(size);
+      for (const line of doc.splitTextToSize(text, width)) {
+        if (y + size * 1.35 > bottom) {
+          doc.addPage();
+          y = margin;
+        }
+        doc.text(line, margin, y, { baseline: "top" });
+        y += size * 1.35;
+      }
+      y += gapAfter;
+    };
+
+    // Space between sections; the next write starts a new page if it doesn't fit.
+    const space = (points) => { y += points; };
+
+    write(meeting.title, 16, true, 2);
+    if (meeting.date) write($("meeting-when").textContent, 10, false, 14);
+    fill(write, space);
+    doc.save(name);
+  }
+
+  // Each line as "[time] Speaker" in bold, then what they said.
+  function writeTranscript(write) {
+    for (const line of meeting.transcript) {
+      write(`[${line.time}] ${line.speaker}`, 10, true, 0);
+      write(line.text, 10, false, 10);
+    }
+  }
+
+  function downloadTranscriptPdf() {
+    savePdf(fileName("transcript", "pdf"), writeTranscript);
+  }
+
+  // Export: the whole meeting record (summary, key points, action items with their
+  // current status, the transcript, then the participants).
+  function exportMeetingPdf() {
+    savePdf(fileName("summary", "pdf"), (write, space) => {
+      const { overview, keyPoints } = meeting.summary;
+      write("Summary", 13, true, 6);
+      overview.forEach((paragraph) => write(paragraph, 10, false, 8));
+      if (keyPoints.length) {
+        write("Key points", 11, true, 4);
+        keyPoints.forEach((point) => write(`•  ${point}`, 10, false, 3));
+      }
+
+      space(14);
+      write("Action items", 13, true, 6);
+      if (!meeting.actionItems.length) write("No action items were identified in this meeting.", 10, false, 0);
+      for (const item of meeting.actionItems) {
+        const status = STATUSES.find((s) => s.id === item.status).label;
+        write(item.task, 10, true, 0);
+        write(`Owner: ${item.owner}     Due: ${item.due || "—"}     Status: ${status}`, 10, false, 8);
+      }
+
+      space(14);
+      write("Transcript", 13, true, 6);
+      if (!meeting.transcript.length) write("No transcript is available for this meeting.", 10, false, 0);
+      writeTranscript(write);
+
+      space(14);
+      write("Participants", 13, true, 6);
+      if (!meeting.participants.length) write("No participants were recorded for this meeting.", 10, false, 0);
+      meeting.participants.forEach((participant) => write(`•  ${participant}`, 10, false, 3));
+    });
+  }
+
+  // ---- Menus (settings, transcript download) ----
+  const closeMenus = [];
+
+  function setUpMenu(button, menu) {
+    const close = () => {
+      menu.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+    };
+    closeMenus.push(close);
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const opening = menu.hidden;
+      closeMenus.forEach((c) => c());
+      if (opening) {
+        menu.hidden = false;
+        button.setAttribute("aria-expanded", "true");
+        menu.querySelector(".menu-item").focus();
+      }
+    });
+    // Choosing an item closes the menu.
+    menu.addEventListener("click", close);
+    menu.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        close();
+        button.focus();
+      }
+    });
+  }
+
+  setUpMenu($("settings-button"), $("settings-menu"));
+  setUpMenu($("download-button"), $("download-menu"));
+  document.addEventListener("click", () => closeMenus.forEach((c) => c()));
+  // "Connect GitHub" doesn't do anything yet.
 
   // ---- Loading ----
   async function load() {
@@ -256,7 +396,9 @@
     renderActionItems();
     renderTranscript();
     $("transcript-search").addEventListener("input", (event) => renderTranscript(event.target.value));
-    $("transcript-download").addEventListener("click", downloadTranscript);
+    $("download-text").addEventListener("click", downloadTranscriptText);
+    $("download-pdf").addEventListener("click", downloadTranscriptPdf);
+    $("export-button").addEventListener("click", exportMeetingPdf);
     $("notice").hidden = true;
     $("page").hidden = false;
   }
