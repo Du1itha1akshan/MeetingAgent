@@ -31,17 +31,30 @@ All in resource group `dev-jrc-meeting-agent-rg-aue`:
 | `meetingagent-logic-app` | The workflow above |
 | `meetingagent-kv` | Secrets the Logic App reads: `fireflies-api-key`, `anthropic-api-key`, `github-access-token`, `meeting-link-secret` |
 | `meetingagentstor`, container `meetings` | One JSON file per meeting: written by the Logic App with its managed identity, read by the site's API |
+| `meetingagentstor`, container `meeting-status` | One JSON file per meeting with the action item statuses people have changed, written by the site's API |
 | `meetingagent-web` | Static Web App for the meeting details page (Free plan, East Asia) |
 
 The Logic App's managed identity has **Storage Blob Data Contributor** on the
 `meetings` container. On the Free plan the site's API can't use a managed
-identity, so it reads with `MEETINGS_READ_SAS`, a read-only shared access
-signature for that container. It expires after a year; run the deploy script
-again before then to renew it.
+identity, so it uses shared access signatures instead:
+
+- `MEETINGS_READ_SAS`: read-only, `meetings` container
+- `MEETING_STATUS_SAS`: read and write, `meeting-status` container only, so it
+  can't change or remove the meetings themselves
+
+Both expire after a year; run the deploy script again before then to renew them.
+
+**Action item statuses.** Changing a status on the page saves it straight away.
+The status file holds only items someone has changed
+(`{ "items": [ { "index", "task", "status" } ], "updatedAt" }`); any other item
+shows as Open. An entry applies only while both its row number and task text
+still match the meeting. Anyone with a meeting's link can change its statuses,
+and who changed them isn't recorded.
 
 ## Set up
 
-1. Create the Static Web App, the `meetings` container and the site's settings.
+1. Create the Static Web App, the `meetings` and `meeting-status` containers and
+   the site's settings.
    The script prints the site's address and checks whether the Logic App can
    write to the container.
 
@@ -68,23 +81,28 @@ again before then to renew it.
    the email is sent, signing in with the Logic App's managed identity, and the
    parameter `view_details_base_url` is `https://<site address>/meeting/`.
 
-To run the page and API locally, put `MEETING_LINK_SECRET`,
-`MEETINGS_CONTAINER_URL` and `MEETINGS_READ_SAS` in `api/local.settings.json`
-(ignored by git) and run `swa start ./web --api-location ./api`.
+To run the page and API locally, put `FUNCTIONS_WORKER_RUNTIME` (`node`),
+`MEETING_LINK_SECRET`, `MEETINGS_CONTAINER_URL`, `MEETINGS_READ_SAS`,
+`MEETING_STATUS_CONTAINER_URL` and `MEETING_STATUS_SAS` in
+`api/local.settings.json` (ignored by git) and run
+`swa start ./web --api-location ./api`. Without the two status settings the
+page still loads, but every item shows as Open and saving fails.
 
 ## Repo layout
 
 ```
 api/
-  src/meeting.js             checks the link, reads the saved meeting, splits Claude's summary
+  src/meeting.js             checks the link, reads the saved meeting, splits Claude's summary,
+                             reads and saves action item statuses
   src/functions/meetings.js  GET /api/meetings/{id}
+                             PUT /api/meetings/{id}/action-items/{index}/status
 infra/
-  staticwebapp.bicep         the Static Web App, meetings container and site settings
+  staticwebapp.bicep         the Static Web App, both containers and site settings
 scripts/
   deploy-staticwebapp.ps1    deploys infra/staticwebapp.bicep
 web/
   index.html, styles.css     the meeting details page
-  app.js                     loads the meeting from the API and renders it
+  app.js                     loads the meeting from the API, renders it and saves status changes
   staticwebapp.config.json   API runtime, and serves the page at /meeting/<meeting_id>/<hash>
 meetings/                    notes published by earlier versions of the agent (no longer updated)
 ```

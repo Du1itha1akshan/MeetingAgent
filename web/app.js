@@ -1,16 +1,19 @@
 // Renders the meeting details page for links like /meeting/<meeting_id>/<hash>. The
 // meeting comes from the API (api/src/functions/meetings.js), which checks the hash.
-// Status changes, filters and transcript search happen in the browser only; nothing is saved yet.
+// Action item statuses are saved through the API as soon as they change; filters and
+// transcript search happen in the browser only.
 (() => {
   const STATUSES = [
     { id: "open", label: "Open" },
     { id: "in_progress", label: "In progress" },
+    { id: "qa", label: "QA" },
     { id: "blocked", label: "Blocked" },
     { id: "done", label: "Done" },
   ];
   const LINK = /^\/meeting\/([A-Za-z0-9]+)\/([0-9A-Fa-f]{64})\/?$/;
 
   let meeting;
+  let meetingLink; // { id, hash } from the page address
   let speakers = [];
   let activeFilter = "all";
 
@@ -86,9 +89,28 @@
     $("duration-item").hidden = !minutes;
     $("meeting-duration").textContent = `${minutes} min`;
 
+    // The first five speakers are shown; the rest are listed under a "+N" button.
+    const shown = speakers.slice(0, 5).map(avatar);
+    if (speakers.length > 5) shown.push(moreSpeakers(speakers.slice(5)));
     $("speakers-item").hidden = !speakers.length;
-    $("speaker-avatars").replaceChildren(...speakers.map(avatar));
+    $("speaker-avatars").replaceChildren(...shown);
     $("speaker-count").textContent = `${speakers.length} ${speakers.length === 1 ? "speaker" : "speakers"}`;
+  }
+
+  function moreSpeakers(names) {
+    const button = el("button", "avatar avatar-more", `+${names.length}`);
+    button.type = "button";
+    button.setAttribute("aria-label", `Show ${names.length} more speakers`);
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", "more-speakers");
+
+    const list = el("ul", "people", ...names.map((name) => el("li", "person", avatar(name), el("span", "", name))));
+    const menu = el("div", "menu menu-left people-menu", list);
+    menu.id = "more-speakers";
+    menu.hidden = true;
+    menu.tabIndex = -1; // so Escape works once the list has focus
+    setUpMenu(button, menu);
+    return el("span", "menu-wrap avatar-more-wrap", button, menu);
   }
 
   function renderSummary() {
@@ -99,6 +121,14 @@
   }
 
   // ---- Action items ----
+  // Done items last; otherwise the order Claude listed them in. Used by the table and the
+  // exported PDF. `index` stays the item's position in the meeting, which is what saving uses.
+  function inDisplayOrder(items) {
+    return items
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => (a.item.status === "done") - (b.item.status === "done") || a.index - b.index);
+  }
+
   function renderActionItems() {
     const items = meeting.actionItems;
     $("actions-body").hidden = !items.length;
@@ -112,11 +142,19 @@
     const pending = [
       [count("blocked"), "blocked"],
       [count("in_progress"), "in progress"],
+      [count("qa"), "in QA"],
       [count("open"), "not started"],
-    ].filter(([n]) => n > 0).map(([n, label]) => `${n} ${label}`);
-    $("actions-sub").textContent = pending.length
-      ? `${pending.join(" · ")} — these go into the follow-up email`
-      : "All action items are done";
+    ].filter(([n]) => n > 0);
+    if (pending.length) {
+      // The blocked count is highlighted in red, and the pill stands in for the "·" after it.
+      const parts = pending.flatMap(([n, label], i) => [
+        ...(i ? [pending[i - 1][1] === "blocked" ? " " : " · "] : []),
+        label === "blocked" ? el("span", "blocked-count", `${n} blocked`) : `${n} ${label}`,
+      ]);
+      $("actions-sub").replaceChildren(...parts);
+    } else {
+      $("actions-sub").textContent = "All action items are done";
+    }
 
     $("progress-label").textContent = `${done} of ${items.length} done`;
     $("progress-fill").style.width = `${(done / items.length) * 100}%`;
@@ -134,12 +172,12 @@
       return button;
     }));
 
-    const rows = items
-      .filter((item) => activeFilter === "all" || item.status === activeFilter)
-      .map((item) => itemRow(item, items.indexOf(item)));
+    const rows = inDisplayOrder(items)
+      .filter(({ item }) => activeFilter === "all" || item.status === activeFilter)
+      .map(({ item, index }) => itemRow(item, index));
     if (!rows.length) {
       const cell = el("td", "no-items", "No action items with this status.");
-      cell.colSpan = 5;
+      cell.colSpan = 6;
       rows.push(el("tr", "", cell));
     }
     $("items-body").replaceChildren(...rows);
@@ -160,18 +198,91 @@
       renderActionItems();
       // The table is rebuilt, so put focus back on this item's status.
       document.querySelector(`#items-body select[data-index="${index}"]`)?.focus();
+      saveStatus(item, index);
     });
+
+    // Doesn't send anything yet. Done tasks don't need a follow-up, so the button is disabled.
+    const followUp = el("button", "follow-up", icon("send"), "Follow up");
+    followUp.type = "button";
+    followUp.setAttribute("aria-label", `Follow up on "${item.task}"`);
+    followUp.disabled = item.status === "done";
+    if (followUp.disabled) followUp.title = "This task is done";
 
     const createIssue = el("button", "tracker", icon("plus"), "Create issue");
     createIssue.type = "button";
+
+    const note = el("div", item.note?.error ? "save-note save-error" : "save-note", item.note?.text ?? "");
+    note.dataset.note = index;
+    note.setAttribute("role", "status");
 
     return el("tr", item.status === "done" ? "row-done" : "",
       el("td", "", el("div", "task-title", item.task)),
       labelledCell("Owner", "", el("div", "owner", avatar(item.owner), item.owner)),
       labelledCell("Due", "due", item.due || "—"),
-      labelledCell("Status", "", el("span", `status s-${item.status}`, select, icon("chevron"))),
+      labelledCell("Status", "", el("span", `status s-${item.status}`, select, icon("chevron")), note),
+      labelledCell("Follow-up", "", followUp),
       labelledCell("Tracker", "", createIssue),
     );
+  }
+
+  // ---- Saving statuses ----
+  // The note under a status ("Saving…", "Saved", "Couldn't save…") is kept on the item, so
+  // it survives the table being rebuilt, and updated in place so focus isn't disturbed.
+  function setNote(item, index, text, error = false) {
+    item.note = text ? { text, error } : null;
+    const node = document.querySelector(`#items-body [data-note="${index}"]`);
+    if (!node) return;
+    node.textContent = text;
+    node.classList.toggle("save-error", error);
+  }
+
+  const SAVE_ERRORS = {
+    item_changed: "This meeting has changed since you opened it. Reload the page.",
+    not_found: "This meeting is no longer available.",
+  };
+
+  // Saves one item's status. Saves for the same item go one at a time, and if the status
+  // changes again while one is in flight, the newest choice is saved next, so a slow
+  // earlier save can't overwrite a later one.
+  async function saveStatus(item, index) {
+    if (item.saving) {
+      item.saveAgain = true;
+      return;
+    }
+    item.saving = true;
+    let failure = null;
+    do {
+      item.saveAgain = false;
+      const wanted = item.status;
+      setNote(item, index, "Saving…");
+      failure = null;
+      try {
+        const response = await fetch(`/api/meetings/${meetingLink.id}/action-items/${index}/status`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "X-Meeting-Link": meetingLink.hash },
+          body: JSON.stringify({ status: wanted, task: item.task }),
+        });
+        if (response.ok) {
+          item.savedStatus = wanted;
+        } else {
+          const { error } = await response.json().catch(() => ({}));
+          failure = SAVE_ERRORS[error] ?? "Couldn't save. Try again.";
+        }
+      } catch {
+        failure = "Couldn't save. Check your connection and try again.";
+      }
+    } while (item.saveAgain);
+    item.saving = false;
+
+    if (failure) {
+      // Put the status back to the last one that was saved.
+      item.status = item.savedStatus;
+      setNote(item, index, failure, true);
+      renderActionItems();
+      return;
+    }
+    setNote(item, index, "Saved");
+    setTimeout(() => { if (item.note?.text === "Saved") setNote(item, index, ""); }, 2000);
   }
 
   // On narrow screens the table header is hidden and each cell shows this label instead.
@@ -310,7 +421,7 @@
       space(14);
       write("Action items", 13, true, 6);
       if (!meeting.actionItems.length) write("No action items were identified in this meeting.", 10, false, 0);
-      for (const item of meeting.actionItems) {
+      for (const { item } of inDisplayOrder(meeting.actionItems)) {
         const status = STATUSES.find((s) => s.id === item.status).label;
         write(item.task, 10, true, 0);
         write(`Owner: ${item.owner}     Due: ${item.due || "—"}     Status: ${status}`, 10, false, 8);
@@ -328,7 +439,7 @@
     });
   }
 
-  // ---- Menus (settings, transcript download) ----
+  // ---- Menus (settings, transcript download, more speakers) ----
   const closeMenus = [];
 
   function setUpMenu(button, menu) {
@@ -344,7 +455,8 @@
       if (opening) {
         menu.hidden = false;
         button.setAttribute("aria-expanded", "true");
-        menu.querySelector(".menu-item").focus();
+        // The speakers list has no items to choose, so the list itself takes focus.
+        (menu.querySelector(".menu-item") ?? menu).focus();
       }
     });
     // Choosing an item closes the menu.
@@ -388,7 +500,12 @@
     }
 
     meeting = await response.json();
-    meeting.actionItems.forEach((item) => { item.status = "open"; });
+    meetingLink = { id: link[1], hash: link[2] };
+    meeting.actionItems.forEach((item) => {
+      // The API sends each item's saved status (open if nobody has changed it).
+      if (!STATUSES.some((s) => s.id === item.status)) item.status = "open";
+      item.savedStatus = item.status;
+    });
     speakers = [...new Set(meeting.transcript.map((line) => line.speaker))];
 
     renderHeader();

@@ -8,13 +8,15 @@
   removed:
     - the Static Web App (Free plan)
     - the "meetings" container in the existing storage account
-    - the app settings the site's API needs: the link secret and a read-only SAS
+    - the "meeting-status" container, where the API saves action item statuses
+    - the app settings the site's API needs: the link secret, a read-only SAS for
+      "meetings" and a read/write SAS for "meeting-status"
 
-  Then checks that the Logic App's managed identity can write to the container.
+  Then checks that the Logic App's managed identity can write to the meetings container.
   Granting that role needs Owner or User Access Administrator, so if it's missing the
   script prints the command for someone with that access to run.
 
-  The read-only SAS expires after a year; run this again before then to renew it.
+  Both SAS tokens expire after a year; run this again before then to renew them.
   Running it again also re-applies the template, so settings changed in the portal
   since (such as the hosting plan) go back to what the template says.
 
@@ -88,6 +90,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "`n===== Deployed =====" -ForegroundColor Green
 Write-Host "Static Web App: $Name"
 Write-Host "URL:            https://$hostname"
+Write-Host "Statuses saved: container '$($outputs.statusContainerName.value)'"
 Write-Host "SAS expiry:     $($outputs.sasExpiry.value)  (run this script again before then)"
 Write-Host "`nSet the Logic App parameter view_details_base_url to: https://$hostname/meeting/"
 Write-Host "Deployment token (for the Static Web Apps CLI): Azure portal > $Name > Overview > Manage deployment token"
