@@ -302,20 +302,20 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
 .status .icon { position: absolute; right: 12px; width: 16px; height: 16px; pointer-events: none; }
 /* The status dropdown, then the Overdue tag and save note under it. */
 .status-stack { display: flex; flex-direction: column; align-items: flex-start; }
+/* "Overdue · 5 days" with a clock, no box, lined up with the status text (13px in, like its dot). */
 .overdue-tag {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: #fdede0;
-  color: #b4540a;
+  gap: 5px;
+  margin: 7px 0 0 13px;
+  color: #c2410c;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
   cursor: default;
 }
-.overdue-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #e8710a; }
+.overdue-tag .icon { width: 13px; height: 13px; stroke-width: 2.1; }
+.overdue-days { color: #9a3412; font-weight: 500; }
 /* "Saving…", "Saved" or an error under a status. */
 .save-note { font-size: 12px; color: var(--text-3); }
 .save-note:empty { display: none; }

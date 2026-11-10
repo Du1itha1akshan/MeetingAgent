@@ -264,27 +264,30 @@ const validDate = (value) => {
   return date && !Number.isNaN(date.getTime()) ? date : null;
 };
 
-// Same rule as the page: "Thu 5 Nov" is overdue from the day after, "Before 20 Nov" from the
-// 20th itself, and due dates in any other form are never overdue.
-function isOverdue(due, status, meetingDate, now = new Date()) {
-  if (status === "done") return false;
+// Same rule as the page: how many days late an item is, or 0. "Thu 5 Nov" is due by the end
+// of the 5th (1 day overdue on the 6th); "Before 20 Nov" by the end of the 19th (1 day on the
+// 20th). Due dates in any other form are never overdue.
+function overdueDays(due, status, meetingDate, now = new Date()) {
+  if (status === "done") return 0;
   const match = DUE_DATE.exec(String(due ?? "").trim());
-  if (!match) return false;
+  if (!match) return 0;
   const month = MONTHS.indexOf(match[3].toLowerCase());
-  if (month < 0) return false;
+  if (month < 0) return 0;
   const year = match[4] ? Number(match[4]) : localDate(validDate(meetingDate) ?? now).year;
   const dueDay = new Date(Date.UTC(year, month, Number(match[2])));
-  if (dueDay.getUTCMonth() !== month) return false; // e.g. "31 Nov"
+  if (dueDay.getUTCMonth() !== month) return 0; // e.g. "31 Nov"
+  const lastDay = dueDay.getTime() - (/^before/i.test(match[1] ?? "") ? 86400000 : 0);
   const t = localDate(now);
-  const today = Date.UTC(t.year, t.month, t.day);
-  return /^before/i.test(match[1] ?? "") ? today >= dueDay.getTime() : today > dueDay.getTime();
+  return Math.max(0, Math.round((Date.UTC(t.year, t.month, t.day) - lastDay) / 86400000));
 }
+
+const isOverdue = (due, status, meetingDate, now) => overdueDays(due, status, meetingDate, now) > 0;
 
 const escapeHtml = (text) => String(text ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 // The follow-up email. Everything from the meeting is escaped, so a task can't add markup.
 // The View Details button matches the one in the summary email.
-function buildFollowUpEmail({ owner, task, due, status, overdue, meetingTitle, meetingDate, detailsUrl }) {
+function buildFollowUpEmail({ owner, task, due, status, daysOverdue = 0, meetingTitle, meetingDate, detailsUrl }) {
   const firstName = owner.trim().split(/\s+/)[0];
   const date = validDate(meetingDate);
   const when = date
@@ -292,7 +295,10 @@ function buildFollowUpEmail({ owner, task, due, status, overdue, meetingTitle, m
     : "";
   const label = 'style="padding:6px 16px 6px 0;color:#6b7280;vertical-align:top;white-space:nowrap;"';
   const value = 'style="padding:6px 0;vertical-align:top;"';
-  const overdueTag = overdue ? ' &middot; <span style="color:#b4540a;font-weight:600;">Overdue</span>' : "";
+  // e.g. "Thu 5 Nov · Overdue · 5 days", in the same orange as the page.
+  const overdueTag = daysOverdue > 0
+    ? ` &middot; <span style="color:#c2410c;font-weight:600;">Overdue</span> <span style="color:#9a3412;">&middot; ${daysOverdue} ${daysOverdue === 1 ? "day" : "days"}</span>`
+    : "";
   const button = detailsUrl
     ? `<table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding-top:20px;">` +
       `<table role="presentation" align="center" width="374" border="0" cellspacing="0" cellpadding="0" style="width:374px;max-width:100%;"><tr>` +
@@ -356,7 +362,7 @@ async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fet
     task: item.task,
     due: item.due,
     status,
-    overdue: isOverdue(item.due, status, saved.date, now()),
+    daysOverdue: overdueDays(item.due, status, saved.date, now()),
     meetingTitle: saved.title,
     meetingDate: saved.date,
     detailsUrl,
@@ -391,5 +397,5 @@ async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fet
 
 module.exports = {
   isValidLink, parseSummary, parseTranscript, getMeeting, setActionItemStatus, sendFollowUp,
-  buildFollowUpEmail, isOverdue, STATUS_IDS,
+  buildFollowUpEmail, isOverdue, overdueDays, STATUS_IDS,
 };

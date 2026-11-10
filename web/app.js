@@ -139,15 +139,25 @@
     return { date, before: /^before/i.test(match[1] ?? "") };
   }
 
-  // "Before 20 Nov" is overdue from the 20th; "Thu 5 Nov" from the day after. Uses the viewer's date.
-  function isOverdue(item) {
-    if (item.status === "done") return false;
+  // How many days late an item is, or 0. "Thu 5 Nov" is due by the end of the 5th, so it's
+  // 1 day overdue on the 6th; "Before 20 Nov" is due by the end of the 19th, so 1 day on the 20th.
+  // Uses the viewer's date.
+  function overdueDays(item) {
+    if (item.status === "done") return 0;
     const due = dueDate(item.due);
-    if (!due) return false;
+    if (!due) return 0;
+    const lastDay = new Date(due.date);
+    if (due.before) lastDay.setDate(lastDay.getDate() - 1);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return due.before ? today >= due.date : today > due.date;
+    return Math.max(0, Math.round((today - lastDay) / 86400000));
   }
+
+  const isOverdue = (item) => overdueDays(item) > 0;
+  const overdueText = (item) => {
+    const days = overdueDays(item);
+    return `Overdue · ${days} ${days === 1 ? "day" : "days"}`;
+  };
 
   // Overdue items first and Done items last; within each group, the order Claude listed them in.
   // Used by the table and the exported PDF. `index` stays the item's position in the meeting,
@@ -246,7 +256,10 @@
     // Shown, not chosen: the tag goes away when the item is marked Done.
     const statusStack = el("div", "status-stack", el("span", `status s-${item.status}`, select, icon("chevron")));
     if (isOverdue(item)) {
-      const tag = el("span", "overdue-tag", "Overdue");
+      // A clock, "Overdue" and how late it is, e.g. "Overdue · 5 days".
+      const days = overdueDays(item);
+      const tag = el("span", "overdue-tag", icon("clock"), "Overdue",
+        el("span", "overdue-days", ` · ${days} ${days === 1 ? "day" : "days"}`));
       tag.title = `Due ${item.due}. Set automatically; it clears when the item is marked Done.`;
       statusStack.append(tag);
     }
@@ -618,7 +631,7 @@
                 item.task,
                 item.owner,
                 item.due || "—",
-                isOverdue(item) ? { text: `${status} (Overdue)`, color: [180, 84, 10] } : status,
+                isOverdue(item) ? { text: `${status} (${overdueText(item)})`, color: [180, 84, 10] } : status,
               ],
             };
           }),
