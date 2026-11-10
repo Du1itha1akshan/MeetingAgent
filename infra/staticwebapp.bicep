@@ -18,6 +18,12 @@
 // limited to particular files, so keeping statuses apart means that key can't change or
 // remove the meetings themselves. Anyone with a meeting's link can change its statuses.
 //
+// Follow-up emails are sent by the separate Logic App meetingagent-followup-logic-app
+// (built in the portal, not by this template). The API calls its HTTP trigger, whose URL
+// (FOLLOWUP_TRIGGER_URL) is read here so it never has to be copied by hand; it contains a
+// signature, so it's kept in app settings only. That Logic App must exist and be published
+// before this template is deployed.
+//
 // Redeploy before sasExpiry to renew both SAS tokens.
 
 @description('Name of the static web app.')
@@ -35,6 +41,12 @@ param meetingLinkSecret string
 
 @description('When the API\'s shared access signatures stop working.')
 param sasExpiry string = dateTimeAdd(utcNow('u'), 'P1Y', 'yyyy-MM-ddTHH:mm:ssZ')
+
+@description('Existing Logic App that sends follow-up emails, in the same resource group.')
+param followUpLogicAppName string = 'meetingagent-followup-logic-app'
+
+@description('Name of that Logic App\'s HTTP trigger.')
+param followUpTriggerName string = 'Follow_up_request'
 
 var containerName = 'meetings'
 var statusContainerName = 'meeting-status'
@@ -56,6 +68,14 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
 
   resource blobService 'blobServices' existing = {
     name: 'default'
+  }
+}
+
+resource followUpLogicApp 'Microsoft.Logic/workflows@2019-05-01' existing = {
+  name: followUpLogicAppName
+
+  resource trigger 'triggers' existing = {
+    name: followUpTriggerName
   }
 }
 
@@ -97,6 +117,10 @@ resource appSettings 'Microsoft.Web/staticSites/config@2024-11-01' = {
       signedProtocol: 'https'
       signedExpiry: sasExpiry
     }).serviceSasToken
+    // Where the API asks for a follow-up email to be sent, and the page address the email's
+    // View Details button links to (followed by <meeting_id>/<hash>).
+    FOLLOWUP_TRIGGER_URL: followUpLogicApp::trigger.listCallbackUrl().value
+    VIEW_DETAILS_BASE_URL: 'https://${staticWebApp.properties.defaultHostname}/meeting/'
   }
   // Applied after the containers exist, so the API never gets a SAS for a missing container.
   dependsOn: [

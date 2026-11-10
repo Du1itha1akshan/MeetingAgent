@@ -229,11 +229,13 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
 .s-qa { --dot: #eab308; --pill: #fdf6d8; --ink: #855d00; }
 .s-blocked { --dot: #d92d20; --pill: #fdeceb; --ink: #b42318; }
 .s-done { --dot: #22a05a; --pill: #e4f4ea; --ink: #176c3d; }
-.dot:is(.s-open, .s-in_progress, .s-qa, .s-blocked, .s-done) { background: var(--dot); }
+/* Overdue is set automatically from the due date, not chosen. */
+.s-overdue { --dot: #e8710a; --pill: #fdede0; --ink: #b4540a; }
+.dot:is(.s-open, .s-in_progress, .s-qa, .s-blocked, .s-done, .s-overdue) { background: var(--dot); }
 
-/* "N blocked" in the line under the Action items heading. */
-/* Same height and side padding as the filter buttons. */
-.blocked-count {
+/* "N blocked" and "N overdue" in the line under the Action items heading.
+   Same height and side padding as the filter buttons. */
+.blocked-count, .overdue-count {
   display: inline-flex;
   align-items: center;
   height: 36px;
@@ -246,15 +248,16 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
   vertical-align: middle;
   margin-right: 4px; /* a little extra room before the next count */
 }
+/* A darker orange than the dot, so the white text stays readable. */
+.overdue-count { background: #c2580a; }
 
 .table-wrap { overflow-x: auto; }
 .items { width: 100%; min-width: 760px; border-collapse: collapse; table-layout: fixed; }
-.c-task { width: 21%; }
-.c-owner { width: 17%; }
-.c-due { width: 11%; }
+.c-task { width: 32%; }
+.c-owner { width: 21%; }
+.c-due { width: 12%; }
 .c-status { width: 21%; }
 .c-follow-up { width: 14%; }
-.c-tracker { width: 16%; }
 .items th {
   padding: 12px 12px 10px 0;
   border-bottom: 1px solid var(--border);
@@ -297,28 +300,27 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
   cursor: pointer;
 }
 .status .icon { position: absolute; right: 12px; width: 16px; height: 16px; pointer-events: none; }
+/* The status dropdown, then the Overdue tag and save note under it. */
+.status-stack { display: flex; flex-direction: column; align-items: flex-start; }
+.overdue-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #fdede0;
+  color: #b4540a;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: default;
+}
+.overdue-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #e8710a; }
 /* "Saving…", "Saved" or an error under a status. */
 .save-note { font-size: 12px; color: var(--text-3); }
 .save-note:empty { display: none; }
 .save-note:not(:empty) { margin-top: 4px; }
 .save-error { color: #b42318; }
-
-.tracker {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 34px;
-  padding: 0 11px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  font-size: 13.5px;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.tracker:hover { background: #f9fafb; }
-.tracker .icon { width: 15px; height: 15px; }
 
 /* Per-task follow-up: outlined in the page's blue (--blue); grey when the task is done. */
 .follow-up {
@@ -339,6 +341,12 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
 .follow-up:hover:not(:disabled) { background: var(--blue-soft); }
 .follow-up .icon { width: 14px; height: 14px; }
 .follow-up:disabled { border-color: var(--border); background: #f9fafb; color: #9ca3af; cursor: not-allowed; }
+/* Briefly green after a follow-up email was sent. */
+.follow-up-sent { border-color: #22a05a; color: #176c3d; }
+/* The button, then any error and "Last follow-up" under it. */
+.follow-up-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.last-follow-up { font-size: 12px; line-height: 1.35; color: var(--text-3); }
+.follow-up-error { font-size: 12px; line-height: 1.35; color: #b42318; }
 .no-items { padding: 28px 0; color: var(--text-3); text-align: center; }
 
 /* ---- Transcript ---- */
@@ -383,7 +391,7 @@ mark { border-radius: 2px; background: #fff1a8; color: inherit; }
   .transcript { position: static; max-height: 640px; }
 }
 
-/* Each action item becomes a block: the task, then labelled owner/due/status/follow-up/tracker rows. */
+/* Each action item becomes a block: the task, then labelled owner/due/status/follow-up rows. */
 @media (max-width: 860px) {
   .items { min-width: 0; table-layout: auto; }
   .items colgroup, .items thead { display: none; }

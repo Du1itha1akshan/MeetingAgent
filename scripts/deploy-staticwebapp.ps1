@@ -10,7 +10,11 @@
     - the "meetings" container in the existing storage account
     - the "meeting-status" container, where the API saves action item statuses
     - the app settings the site's API needs: the link secret, a read-only SAS for
-      "meetings" and a read/write SAS for "meeting-status"
+      "meetings", a read/write SAS for "meeting-status", the follow-up Logic App's trigger
+      URL and the page address used in follow-up emails
+
+  The follow-up Logic App (meetingagent-followup-logic-app) is built in the portal, not by
+  this script; it must already exist and be published with its Follow_up_request trigger.
 
   Then checks that the Logic App's managed identity can write to the meetings container.
   Granting that role needs Owner or User Access Administrator, so if it's missing the
@@ -31,11 +35,22 @@ param(
   [string]$Name = "meetingagent-web",
   [string]$Location = "eastasia",
   [string]$KeyVaultName = "meetingagent-kv",
-  [string]$LogicAppName = "meetingagent-logic-app"
+  [string]$LogicAppName = "meetingagent-logic-app",
+  [string]$FollowUpLogicAppName = "meetingagent-followup-logic-app",
+  [string]$FollowUpTriggerName = "Follow_up_request"
 )
 
 $ErrorActionPreference = "Stop"
 $template = Join-Path (Split-Path -Parent $PSScriptRoot) "infra/staticwebapp.bicep"
+
+# The template reads the follow-up Logic App's trigger URL, so check it's there first for a
+# clearer message than a failed deployment. (Only the trigger's name is read, not its URL.)
+$subscriptionId = az account show --query id -o tsv
+$triggerPath = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Logic/workflows/$FollowUpLogicAppName/triggers/$FollowUpTriggerName"
+$trigger = az rest --method get --url $triggerPath --uri-parameters api-version=2019-05-01 --query name -o tsv 2>$null
+if ($LASTEXITCODE -ne 0 -or $trigger -ne $FollowUpTriggerName) {
+  throw "Logic App '$FollowUpLogicAppName' with a published trigger '$FollowUpTriggerName' wasn't found in '$ResourceGroup'. Create and publish it first (see README)."
+}
 
 # The API checks each link's hash with the same secret the Logic App hashes with.
 $meetingLinkSecret = az keyvault secret show --vault-name $KeyVaultName --name meeting-link-secret --query value -o tsv
@@ -61,7 +76,7 @@ try {
     --mode Incremental `
     --template-file $template `
     --parameters "@$paramsFile" `
-    --parameters name=$Name location=$Location `
+    --parameters name=$Name location=$Location followUpLogicAppName=$FollowUpLogicAppName followUpTriggerName=$FollowUpTriggerName `
     --query properties.outputs -o json
   # $ErrorActionPreference only catches terminating PowerShell errors, not az's exit code.
   if ($LASTEXITCODE -ne 0) {
@@ -91,6 +106,7 @@ Write-Host "`n===== Deployed =====" -ForegroundColor Green
 Write-Host "Static Web App: $Name"
 Write-Host "URL:            https://$hostname"
 Write-Host "Statuses saved: container '$($outputs.statusContainerName.value)'"
+Write-Host "Follow-ups:     sent by Logic App '$FollowUpLogicAppName' (trigger URL stored in app settings)"
 Write-Host "SAS expiry:     $($outputs.sasExpiry.value)  (run this script again before then)"
 Write-Host "`nSet the Logic App parameter view_details_base_url to: https://$hostname/meeting/"
 Write-Host "Deployment token (for the Static Web Apps CLI): Azure portal > $Name > Overview > Manage deployment token"

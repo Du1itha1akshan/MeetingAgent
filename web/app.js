@@ -1,7 +1,7 @@
 // Renders the meeting details page for links like /meeting/<meeting_id>/<hash>. The
 // meeting comes from the API (api/src/functions/meetings.js), which checks the hash.
-// Action item statuses are saved through the API as soon as they change; filters and
-// transcript search happen in the browser only.
+// Action item statuses are saved through the API as soon as they change, and Follow up asks
+// the API to email the task's owner; filters and transcript search happen in the browser only.
 (() => {
   const STATUSES = [
     { id: "open", label: "Open" },
@@ -121,12 +121,42 @@
   }
 
   // ---- Action items ----
-  // Done items last; otherwise the order Claude listed them in. Used by the table and the
-  // exported PDF. `index` stays the item's position in the meeting, which is what saving uses.
+  // Overdue isn't a status anyone picks: it's worked out from the due date, so it can't be
+  // set or cleared by hand. Due dates count only in the form Claude is asked to write them:
+  // "Thu 5 Nov", "Before 20 Nov", or "Fri 8 Jan 2027" when the year isn't the meeting's.
+  // Anything else ("Thursday", "Before release", "—") is never overdue.
+  const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const DUE_DATE = /^(before\s+|by\s+)?(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(\d{1,2})\s+([a-z]{3})[a-z]*\.?(?:\s+(\d{4}))?$/i;
+
+  function dueDate(due) {
+    const match = DUE_DATE.exec(String(due ?? "").trim());
+    if (!match) return null;
+    const month = MONTHS.indexOf(match[3].toLowerCase());
+    if (month < 0) return null;
+    const year = match[4] ? Number(match[4]) : new Date(meeting.date ?? Date.now()).getFullYear();
+    const date = new Date(year, month, Number(match[2]));
+    if (date.getMonth() !== month) return null; // e.g. "31 Nov"
+    return { date, before: /^before/i.test(match[1] ?? "") };
+  }
+
+  // "Before 20 Nov" is overdue from the 20th; "Thu 5 Nov" from the day after. Uses the viewer's date.
+  function isOverdue(item) {
+    if (item.status === "done") return false;
+    const due = dueDate(item.due);
+    if (!due) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return due.before ? today >= due.date : today > due.date;
+  }
+
+  // Overdue items first and Done items last; within each group, the order Claude listed them in.
+  // Used by the table and the exported PDF. `index` stays the item's position in the meeting,
+  // which is what saving uses.
   function inDisplayOrder(items) {
+    const rank = (item) => (item.status === "done" ? 2 : isOverdue(item) ? 0 : 1);
     return items
       .map((item, index) => ({ item, index }))
-      .sort((a, b) => (a.item.status === "done") - (b.item.status === "done") || a.index - b.index);
+      .sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index);
   }
 
   function renderActionItems() {
@@ -138,18 +168,22 @@
     }
 
     const count = (status) => items.filter((item) => item.status === status).length;
+    const overdue = items.filter(isOverdue).length;
     const done = count("done");
+    // Overdue items are also counted under their status (an item can be blocked and overdue).
     const pending = [
       [count("blocked"), "blocked"],
+      [overdue, "overdue"],
       [count("in_progress"), "in progress"],
       [count("qa"), "in QA"],
       [count("open"), "not started"],
     ].filter(([n]) => n > 0);
+    // The blocked and overdue counts are highlighted pills, and a pill stands in for the "·" after it.
+    const PILLS = { blocked: "blocked-count", overdue: "overdue-count" };
     if (pending.length) {
-      // The blocked count is highlighted in red, and the pill stands in for the "·" after it.
       const parts = pending.flatMap(([n, label], i) => [
-        ...(i ? [pending[i - 1][1] === "blocked" ? " " : " · "] : []),
-        label === "blocked" ? el("span", "blocked-count", `${n} blocked`) : `${n} ${label}`,
+        ...(i ? [PILLS[pending[i - 1][1]] ? " " : " · "] : []),
+        PILLS[label] ? el("span", PILLS[label], `${n} ${label}`) : `${n} ${label}`,
       ]);
       $("actions-sub").replaceChildren(...parts);
     } else {
@@ -159,7 +193,11 @@
     $("progress-label").textContent = `${done} of ${items.length} done`;
     $("progress-fill").style.width = `${(done / items.length) * 100}%`;
 
-    const filters = [{ id: "all", label: "All", count: items.length }, ...STATUSES.map((s) => ({ ...s, count: count(s.id) }))];
+    const filters = [
+      { id: "all", label: "All", count: items.length },
+      ...STATUSES.map((s) => ({ ...s, count: count(s.id) })),
+      { id: "overdue", label: "Overdue", count: overdue },
+    ];
     $("filters").replaceChildren(...filters.map((filter) => {
       const dot = el("span", filter.id === "all" ? "dot" : `dot s-${filter.id}`);
       const button = el("button", "filter", dot, filter.label, el("span", "", String(filter.count)));
@@ -173,11 +211,11 @@
     }));
 
     const rows = inDisplayOrder(items)
-      .filter(({ item }) => activeFilter === "all" || item.status === activeFilter)
+      .filter(({ item }) => activeFilter === "all" || (activeFilter === "overdue" ? isOverdue(item) : item.status === activeFilter))
       .map(({ item, index }) => itemRow(item, index));
     if (!rows.length) {
       const cell = el("td", "no-items", "No action items with this status.");
-      cell.colSpan = 6;
+      cell.colSpan = 5;
       rows.push(el("tr", "", cell));
     }
     $("items-body").replaceChildren(...rows);
@@ -201,28 +239,119 @@
       saveStatus(item, index);
     });
 
-    // Doesn't send anything yet. Done tasks don't need a follow-up, so the button is disabled.
-    const followUp = el("button", "follow-up", icon("send"), "Follow up");
-    followUp.type = "button";
-    followUp.setAttribute("aria-label", `Follow up on "${item.task}"`);
-    followUp.disabled = item.status === "done";
-    if (followUp.disabled) followUp.title = "This task is done";
-
-    const createIssue = el("button", "tracker", icon("plus"), "Create issue");
-    createIssue.type = "button";
-
     const note = el("div", item.note?.error ? "save-note save-error" : "save-note", item.note?.text ?? "");
     note.dataset.note = index;
     note.setAttribute("role", "status");
+
+    // Shown, not chosen: the tag goes away when the item is marked Done.
+    const statusStack = el("div", "status-stack", el("span", `status s-${item.status}`, select, icon("chevron")));
+    if (isOverdue(item)) {
+      const tag = el("span", "overdue-tag", "Overdue");
+      tag.title = `Due ${item.due}. Set automatically; it clears when the item is marked Done.`;
+      statusStack.append(tag);
+    }
+    statusStack.append(note);
 
     return el("tr", item.status === "done" ? "row-done" : "",
       el("td", "", el("div", "task-title", item.task)),
       labelledCell("Owner", "", el("div", "owner", avatar(item.owner), item.owner)),
       labelledCell("Due", "due", item.due || "—"),
-      labelledCell("Status", "", el("span", `status s-${item.status}`, select, icon("chevron")), note),
-      labelledCell("Follow-up", "", followUp),
-      labelledCell("Tracker", "", createIssue),
+      labelledCell("Status", "", statusStack),
+      labelledCell("Follow-up", "", followUpCell(item, index)),
     );
+  }
+
+  // ---- Follow-ups ----
+  // The Follow up button asks the API to email the task's owner (through the follow-up Logic
+  // App). "Last follow-up" shows only after an email was actually sent, and stays hidden until
+  // then. Like status notes, the button's state lives on the item so it survives the table
+  // being rebuilt, and the cell is replaced in place so the rest of the table isn't disturbed.
+  const NO_OWNER = /^(|—|-|unassigned)$/i;
+  const FOLLOW_UP_ERRORS = {
+    no_email: "No email found for this owner.",
+    no_owner: "This task has no owner.",
+    done: "This task is done.",
+    item_changed: "This meeting has changed since you opened it. Reload the page.",
+    not_found: "This meeting is no longer available.",
+  };
+
+  // "Tue 10 Nov, 2:15 PM" in the viewer's time zone, with the year if it isn't this year.
+  function formatSentAt(iso) {
+    const date = new Date(iso);
+    const options = { weekday: "short", day: "numeric", month: "short" };
+    if (date.getFullYear() !== new Date().getFullYear()) options.year = "numeric";
+    const { time, period } = clockParts(date);
+    return `${date.toLocaleDateString("en-GB", options)}, ${time} ${period}`;
+  }
+
+  function followUpCell(item, index) {
+    const done = item.status === "done";
+    const noOwner = NO_OWNER.test(String(item.owner ?? "").trim());
+    const label = item.followUpSending ? "Sending…" : item.followUpSent ? "Sent ✓" : "Follow up";
+    const button = el("button", item.followUpSent ? "follow-up follow-up-sent" : "follow-up", icon("send"), label);
+    button.type = "button";
+    button.setAttribute("aria-label", `Follow up on "${item.task}"`);
+    button.disabled = done || noOwner || Boolean(item.followUpSending);
+    if (done) button.title = "This task is done";
+    else if (noOwner) button.title = "This task has no owner";
+    button.addEventListener("click", () => sendFollowUp(item, index));
+
+    const cell = el("div", "follow-up-cell", button);
+    cell.dataset.followUp = index;
+    if (item.followUpError) {
+      const error = el("div", "follow-up-error", item.followUpError);
+      error.setAttribute("role", "alert");
+      cell.append(error);
+    }
+    if (item.lastFollowUpAt) {
+      const last = el("div", "last-follow-up", `Last follow-up: ${formatSentAt(item.lastFollowUpAt)}`);
+      last.title = new Date(item.lastFollowUpAt).toLocaleString();
+      cell.append(last);
+    }
+    return cell;
+  }
+
+  function refreshFollowUp(item, index, focus = false) {
+    const cell = document.querySelector(`#items-body [data-follow-up="${index}"]`);
+    if (!cell) return;
+    const next = followUpCell(item, index);
+    cell.replaceWith(next);
+    if (focus) next.querySelector(".follow-up").focus();
+  }
+
+  async function sendFollowUp(item, index) {
+    if (item.followUpSending) return;
+    item.followUpSending = true;
+    item.followUpSent = false;
+    item.followUpError = null;
+    refreshFollowUp(item, index, true);
+
+    let error = null;
+    try {
+      const response = await fetch(`/api/meetings/${meetingLink.id}/action-items/${index}/follow-up`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Meeting-Link": meetingLink.hash },
+        body: JSON.stringify({ task: item.task }),
+      });
+      const result = await response.json().catch(() => ({}));
+      // Only a confirmed send updates "Last follow-up".
+      if (response.ok && result.sentAt) item.lastFollowUpAt = result.sentAt;
+      else error = FOLLOW_UP_ERRORS[result.error] ?? "Couldn't send the follow-up. Try again.";
+    } catch {
+      error = "Couldn't send the follow-up. Check your connection and try again.";
+    }
+
+    item.followUpSending = false;
+    item.followUpError = error;
+    item.followUpSent = !error;
+    refreshFollowUp(item, index, true);
+    if (!error) {
+      setTimeout(() => {
+        if (!item.followUpSent) return;
+        item.followUpSent = false;
+        refreshFollowUp(item, index);
+      }, 3000);
+    }
   }
 
   // ---- Saving statuses ----
@@ -354,8 +483,8 @@
     return jsPdfLoading;
   }
 
-  // Builds an A4 PDF and saves it. `fill` adds the content through
-  // write(text, size, bold, gapAfter) and space(points); the meeting's title and date always come first.
+  // Builds an A4 PDF and saves it. `fill` adds the content through write(text, size, bold,
+  // gapAfter), space(points) and table(columns, rows); the meeting's title and date always come first.
   async function savePdf(name, fill) {
     let jsPDF;
     try {
@@ -388,9 +517,60 @@
     // Space between sections; the next write starts a new page if it doesn't fit.
     const space = (points) => { y += points; };
 
+    // A table whose cells wrap; the header row repeats at the top of each new page.
+    // columns: [{ header, share }] with shares adding up to 1. rows: [{ cells, color }], where a
+    // cell is text or { text, color } and colours are [r, g, b].
+    const table = (columns, rows) => {
+      const size = 9.5, lineFactor = 1.3, pad = 5;
+      const widths = columns.map((c) => c.share * width);
+      const layout = (cells, bold) => {
+        doc.setFont("helvetica", bold ? "bold" : "normal");
+        doc.setFontSize(size);
+        const lines = cells.map((cell, i) => doc.splitTextToSize(String(cell?.text ?? cell), widths[i] - pad * 2));
+        return { lines, height: Math.max(...lines.map((l) => l.length)) * size * lineFactor + pad * 2 };
+      };
+      const draw = (cells, { lines, height }, { bold = false, background = null, color = [17, 24, 39] } = {}) => {
+        if (background) {
+          doc.setFillColor(...background);
+          doc.rect(margin, y, width, height, "F");
+        }
+        doc.setFont("helvetica", bold ? "bold" : "normal");
+        doc.setFontSize(size);
+        let x = margin;
+        lines.forEach((cellLines, i) => {
+          doc.setTextColor(...(cells[i]?.color ?? color));
+          doc.text(cellLines, x + pad, y + pad, { baseline: "top", lineHeightFactor: lineFactor });
+          x += widths[i];
+        });
+        doc.setTextColor(0, 0, 0);
+        doc.setDrawColor(209, 213, 219);
+        doc.line(margin, y + height, margin + width, y + height);
+        y += height;
+      };
+
+      const headerCells = columns.map((c) => c.header);
+      const header = layout(headerCells, true);
+      const drawHeader = () => draw(headerCells, header, { bold: true, background: [243, 244, 246] });
+      // Don't leave the header alone at the bottom of a page.
+      if (rows.length && y + header.height + layout(rows[0].cells).height > bottom) {
+        doc.addPage();
+        y = margin;
+      }
+      drawHeader();
+      for (const row of rows) {
+        const box = layout(row.cells);
+        if (y + box.height > bottom) {
+          doc.addPage();
+          y = margin;
+          drawHeader();
+        }
+        draw(row.cells, box, { color: row.color });
+      }
+    };
+
     write(meeting.title, 16, true, 2);
     if (meeting.date) write($("meeting-when").textContent, 10, false, 14);
-    fill(write, space);
+    fill(write, space, table);
     doc.save(name);
   }
 
@@ -409,7 +589,7 @@
   // Export: the whole meeting record (summary, key points, action items with their
   // current status, the transcript, then the participants).
   function exportMeetingPdf() {
-    savePdf(fileName("summary", "pdf"), (write, space) => {
+    savePdf(fileName("summary", "pdf"), (write, space, table) => {
       const { overview, keyPoints } = meeting.summary;
       write("Summary", 13, true, 6);
       overview.forEach((paragraph) => write(paragraph, 10, false, 8));
@@ -421,10 +601,28 @@
       space(14);
       write("Action items", 13, true, 6);
       if (!meeting.actionItems.length) write("No action items were identified in this meeting.", 10, false, 0);
-      for (const { item } of inDisplayOrder(meeting.actionItems)) {
-        const status = STATUSES.find((s) => s.id === item.status).label;
-        write(item.task, 10, true, 0);
-        write(`Owner: ${item.owner}     Due: ${item.due || "—"}     Status: ${status}`, 10, false, 8);
+      else {
+        // Same order and colours as the page: overdue first in orange, done last in grey.
+        table(
+          [
+            { header: "Task", share: 0.4 },
+            { header: "Owner", share: 0.2 },
+            { header: "Due", share: 0.15 },
+            { header: "Status", share: 0.25 },
+          ],
+          inDisplayOrder(meeting.actionItems).map(({ item }) => {
+            const status = STATUSES.find((s) => s.id === item.status).label;
+            return {
+              color: item.status === "done" ? [107, 114, 128] : undefined,
+              cells: [
+                item.task,
+                item.owner,
+                item.due || "—",
+                isOverdue(item) ? { text: `${status} (Overdue)`, color: [180, 84, 10] } : status,
+              ],
+            };
+          }),
+        );
       }
 
       space(14);
