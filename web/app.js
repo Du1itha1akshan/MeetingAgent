@@ -16,6 +16,12 @@
   let meetingLink; // { id, hash } from the page address
   let speakers = [];
   let activeFilter = "all";
+  let sort = { by: null, dir: "asc" }; // by: null (default order), "owner" or "due"
+  let searchText = "";  // the action item search, lower-cased
+  let ownerFilter = ""; // an owner's name, "__none__" for no owner, or "" for everyone
+  // null (any date), { preset } (overdue, today, this-week, next-week, later, no-date) or
+  // { from, to }: days picked on the calendar (local midnight; the same day for a single day).
+  let dueFilter = null;
 
   // ---- DOM helpers: data always goes in as text, never as HTML ----
   const $ = (id) => document.getElementById(id);
@@ -159,15 +165,303 @@
     return `Overdue · ${days} ${days === 1 ? "day" : "days"}`;
   };
 
-  // Overdue items first and Done items last; within each group, the order Claude listed them in.
-  // Used by the table and the exported PDF. `index` stays the item's position in the meeting,
-  // which is what saving uses.
+  // ---- Search and owner / due date filters ----
+  // They combine with each other and with the status filters. Due dates use the last day allowed
+  // ("Before 20 Nov" counts as the 19th) and the viewer's date; weeks run Monday to Sunday, as in
+  // the prompt that writes the due dates. "No set date" is "—" or a phrase such as "Before release".
+  const ownerKey = (item) => {
+    const owner = String(item.owner ?? "").trim();
+    return NO_OWNER.test(owner) ? "__none__" : owner;
+  };
+
+  const startOfDay = (date) => { const d = new Date(date); d.setHours(0, 0, 0, 0); return d; };
+  const addDays = (date, n) => { const d = new Date(date); d.setDate(d.getDate() + n); return d; };
+  const sameDay = (a, b) => Boolean(a && b) && a.getTime() === b.getTime();
+
+  // The last day an item may be finished: its due date, or the day before for "Before …".
+  function lastDueDay(item) {
+    const due = dueDate(item.due);
+    if (!due) return null;
+    return due.before ? addDays(due.date, -1) : startOfDay(due.date);
+  }
+
+  function dueMatches(item, filter) {
+    if (!filter) return true;
+    const last = lastDueDay(item);
+    if (filter.from) return Boolean(last) && last >= filter.from && last <= filter.to;
+    if (filter.preset === "no-date") return !last;
+    if (filter.preset === "overdue") return isOverdue(item);
+    if (!last) return false;
+    const today = startOfDay(new Date());
+    const monday = addDays(today, -((today.getDay() + 6) % 7));
+    const nextMonday = addDays(monday, 7);
+    const mondayAfter = addDays(monday, 14);
+    if (filter.preset === "today") return sameDay(last, today);
+    if (filter.preset === "this-week") return last >= monday && last < nextMonday;
+    if (filter.preset === "next-week") return last >= nextMonday && last < mondayAfter;
+    if (filter.preset === "later") return last >= mondayAfter;
+    return true;
+  }
+
+  const matchesOwnerAndSearch = (item) =>
+    (!ownerFilter || ownerKey(item) === ownerFilter)
+    && (!searchText || [item.task, item.owner, item.due].some((value) => String(value ?? "").toLowerCase().includes(searchText)));
+
+  const matchesTools = (item) => matchesOwnerAndSearch(item) && dueMatches(item, dueFilter);
+
+  const toolsActive = () => Boolean(searchText || ownerFilter || dueFilter);
+
+  // Every owner A–Z with how many tasks they have, and "Unassigned" last.
+  function fillOwnerFilter() {
+    const counts = new Map();
+    for (const item of meeting.actionItems) counts.set(ownerKey(item), (counts.get(ownerKey(item)) ?? 0) + 1);
+    const names = [...counts.keys()].filter((key) => key !== "__none__")
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    const options = names.map((name) => {
+      const option = el("option", "", `${name} (${counts.get(name)})`);
+      option.value = name;
+      return option;
+    });
+    if (counts.has("__none__")) {
+      const option = el("option", "", `Unassigned (${counts.get("__none__")})`);
+      option.value = "__none__";
+      options.push(option);
+    }
+    $("owner-filter").append(...options);
+  }
+
+  function clearFilters() {
+    searchText = ownerFilter = "";
+    dueFilter = null;
+    rangeStart = null;
+    activeFilter = "all";
+    $("item-search").value = $("owner-filter").value = "";
+    renderActionItems();
+    $("item-search").focus();
+  }
+
+  // ---- Due date calendar ----
+  // A month calendar under the due date button. Days with tasks due get a dot (orange if any
+  // are overdue), counting only items that pass the owner filter and search. Click a day to
+  // show what's due that day, then optionally a second day for a range.
+  const PRESETS = [
+    ["overdue", "Overdue"], ["today", "Today"], ["this-week", "This week"],
+    ["next-week", "Next week"], ["later", "Later"], ["no-date", "No set date"],
+  ];
+  const PRESET_LABELS = { overdue: "Overdue", today: "Due today", "this-week": "Due this week", "next-week": "Due next week", later: "Due later", "no-date": "No set date" };
+  let calendarMonth = null; // first day of the month shown
+  let calendarFocus = null; // the day that has keyboard focus
+  let rangeStart = null;    // first day of a range, waiting for the second click
+  const shortDay = (date) => date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const longDay = (date) => date.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+
+  function dueLabel() {
+    if (!dueFilter) return "Any due date";
+    if (dueFilter.preset) return PRESET_LABELS[dueFilter.preset];
+    return sameDay(dueFilter.from, dueFilter.to) ? `Due ${shortDay(dueFilter.from)}` : `Due ${shortDay(dueFilter.from)} – ${shortDay(dueFilter.to)}`;
+  }
+
+  function openCalendar(open) {
+    const calendar = $("due-calendar");
+    if (open) {
+      closeMenus.forEach((close) => close());
+      const start = dueFilter?.from ?? startOfDay(new Date());
+      calendarMonth = new Date(start.getFullYear(), start.getMonth(), 1);
+      calendarFocus = start;
+      rangeStart = null;
+      calendar.hidden = false;
+      renderCalendar(true);
+    } else {
+      calendar.hidden = true;
+      rangeStart = null;
+    }
+    $("due-button").setAttribute("aria-expanded", String(open));
+  }
+
+  function setDueFilter(filter, close) {
+    dueFilter = filter;
+    renderActionItems();
+    if (close) {
+      openCalendar(false);
+      $("due-button").focus();
+    } else {
+      renderCalendar(true);
+    }
+  }
+
+  function renderCalendar(focus = false) {
+    // How many tasks are due on each day (and whether any are overdue).
+    const counts = new Map();
+    for (const item of meeting.actionItems.filter(matchesOwnerAndSearch)) {
+      const last = lastDueDay(item);
+      if (!last) continue;
+      const entry = counts.get(last.getTime()) ?? { total: 0, overdue: false };
+      entry.total++;
+      entry.overdue ||= isOverdue(item);
+      counts.set(last.getTime(), entry);
+    }
+
+    const today = startOfDay(new Date());
+    const prev = el("button", "cal-nav cal-prev", icon("chevron"));
+    prev.type = "button";
+    prev.setAttribute("aria-label", "Previous month");
+    prev.addEventListener("click", () => { calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1); calendarFocus = calendarMonth; renderCalendar(); $("due-calendar").querySelector(".cal-prev").focus(); });
+    const next = el("button", "cal-nav cal-next", icon("chevron"));
+    next.type = "button";
+    next.setAttribute("aria-label", "Next month");
+    next.addEventListener("click", () => { calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1); calendarFocus = calendarMonth; renderCalendar(); $("due-calendar").querySelector(".cal-next").focus(); });
+    const title = el("div", "cal-title", calendarMonth.toLocaleDateString("en-GB", { month: "long", year: "numeric" }));
+    title.setAttribute("aria-live", "polite");
+
+    const grid = el("div", "cal-grid");
+    grid.setAttribute("role", "grid");
+    for (const name of ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]) grid.append(el("div", "cal-weekday", name));
+    const first = addDays(calendarMonth, -((calendarMonth.getDay() + 6) % 7)); // the Monday on or before the 1st
+    const range = dueFilter?.from ? dueFilter : null;
+    for (let i = 0; i < 42; i++) {
+      const day = addDays(first, i);
+      const entry = counts.get(day.getTime());
+      const classes = ["cal-day"];
+      if (day.getMonth() !== calendarMonth.getMonth()) classes.push("other-month");
+      if (sameDay(day, today)) classes.push("today");
+      if (entry) classes.push(entry.overdue ? "has-overdue" : "has-items");
+      const selected = range && day >= range.from && day <= range.to;
+      if (selected) classes.push("in-range");
+      if (range && sameDay(day, range.from)) classes.push("range-start");
+      if (range && sameDay(day, range.to)) classes.push("range-end");
+      const button = el("button", classes.join(" "), String(day.getDate()));
+      button.type = "button";
+      button.dataset.date = day.getTime();
+      button.tabIndex = sameDay(day, calendarFocus) ? 0 : -1;
+      button.setAttribute("aria-pressed", String(Boolean(selected)));
+      const tasks = entry ? `, ${entry.total} ${entry.total === 1 ? "task" : "tasks"} due${entry.overdue ? ", some overdue" : ""}` : "";
+      button.setAttribute("aria-label", `${longDay(day)}${tasks}`);
+      button.addEventListener("click", () => pickDay(day));
+      grid.append(button);
+    }
+    grid.addEventListener("keydown", (event) => {
+      const moves = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
+      if (!(event.key in moves)) return;
+      event.preventDefault();
+      calendarFocus = addDays(calendarFocus, moves[event.key]);
+      if (calendarFocus.getMonth() !== calendarMonth.getMonth() || calendarFocus.getFullYear() !== calendarMonth.getFullYear()) {
+        calendarMonth = new Date(calendarFocus.getFullYear(), calendarFocus.getMonth(), 1);
+      }
+      renderCalendar(true);
+    });
+
+    const hint = el("p", "cal-hint", rangeStart
+      ? `From ${shortDay(rangeStart)}. Click an end date for a range, or close to keep this day.`
+      : "Click a day, or two days for a range.");
+    const legend = el("p", "cal-legend", el("span", "cal-dot"), "Tasks due", el("span", "cal-dot cal-dot-overdue"), "Overdue");
+
+    const presets = el("div", "cal-presets", ...PRESETS.map(([value, label]) => {
+      const button = el("button", "cal-preset", label);
+      button.type = "button";
+      button.setAttribute("aria-pressed", String(dueFilter?.preset === value));
+      button.addEventListener("click", () => { rangeStart = null; setDueFilter({ preset: value }, true); });
+      return button;
+    }));
+    const clear = el("button", "cal-clear", "Clear");
+    clear.type = "button";
+    clear.addEventListener("click", () => { rangeStart = null; setDueFilter(null, true); });
+    presets.append(clear);
+
+    $("due-calendar").replaceChildren(el("div", "cal-head", prev, title, next), grid, hint, legend, presets);
+    if (focus) $("due-calendar").querySelector(`.cal-day[data-date="${calendarFocus.getTime()}"]`)?.focus();
+  }
+
+  // First click: that day only (the calendar stays open). Second click: the range between them.
+  function pickDay(day) {
+    calendarFocus = day;
+    if (!rangeStart) {
+      rangeStart = day;
+      setDueFilter({ from: day, to: day }, false);
+    } else {
+      const [from, to] = day < rangeStart ? [day, rangeStart] : [rangeStart, day];
+      rangeStart = null;
+      setDueFilter({ from, to }, true);
+    }
+  }
+
+  function setUpCalendar() {
+    const button = $("due-button"), calendar = $("due-calendar");
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openCalendar(calendar.hidden);
+    });
+    // Clicks inside the calendar don't close it; clicks anywhere else do (like the other menus).
+    calendar.addEventListener("click", (event) => event.stopPropagation());
+    calendar.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        openCalendar(false);
+        button.focus();
+      }
+    });
+    closeMenus.push(() => { if (!calendar.hidden) openCalendar(false); });
+  }
+
+  // ---- Sorting ----
+  // Owner: by name, A–Z or Z–A. Due: dates in date order ("Before 20 Nov" counts as the 19th, so
+  // it comes just before a plain "20 Nov"), then due dates that are phrases ("Before release"),
+  // A–Z. Items with no owner or no due date go last in either direction.
+  function sortKey(item, by) {
+    if (by === "owner") {
+      const owner = String(item.owner ?? "").trim();
+      return NO_OWNER.test(owner) ? { empty: true } : { group: 0, value: owner.toLowerCase() };
+    }
+    const due = String(item.due ?? "").trim();
+    if (!due || due === "—" || due === "-") return { empty: true };
+    const date = dueDate(due);
+    if (date) return { group: 0, value: date.date.getTime() - (date.before ? 1 : 0) };
+    return { group: 1, value: due.toLowerCase() };
+  }
+
+  function compareBy(a, b, by, dir) {
+    const ka = sortKey(a, by), kb = sortKey(b, by);
+    if (ka.empty || kb.empty) return (ka.empty ? 1 : 0) - (kb.empty ? 1 : 0);
+    if (ka.group !== kb.group) return ka.group - kb.group;
+    const order = typeof ka.value === "number" ? ka.value - kb.value : ka.value.localeCompare(kb.value);
+    return dir === "desc" ? -order : order;
+  }
+
+  // The order used by the table and the exported PDF. Done items always go last. Without a sort
+  // chosen, overdue items come first; otherwise the chosen sort decides. Ties keep the order
+  // Claude listed them in. `index` stays the item's position in the meeting, which saving uses.
   function inDisplayOrder(items) {
-    const rank = (item) => (item.status === "done" ? 2 : isOverdue(item) ? 0 : 1);
+    const done = (item) => (item.status === "done" ? 1 : 0);
+    const rank = (item) => (isOverdue(item) ? 0 : 1);
     return items
       .map((item, index) => ({ item, index }))
-      .sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index);
+      .sort((a, b) => done(a.item) - done(b.item)
+        || (sort.by ? compareBy(a.item, b.item, sort.by, sort.dir) : rank(a.item) - rank(b.item))
+        || a.index - b.index);
   }
+
+  // Clicking Owner or Due sorts ascending, then descending, then back to the default order.
+  function setSort(by, dir) {
+    sort = { by, dir };
+    for (const button of document.querySelectorAll(".sort-btn")) {
+      const active = button.dataset.sort === sort.by;
+      button.closest("th").setAttribute("aria-sort", active ? (sort.dir === "asc" ? "ascending" : "descending") : "none");
+      button.querySelector("use").setAttribute("href", active ? `#i-sort-${sort.dir}` : "#i-sort");
+    }
+    $("sort-select").value = sort.by ? `${sort.by}:${sort.dir}` : "";
+    if (meeting) renderActionItems();
+  }
+
+  for (const button of document.querySelectorAll(".sort-btn")) {
+    button.addEventListener("click", () => {
+      const by = button.dataset.sort;
+      if (sort.by !== by) setSort(by, "asc");
+      else if (sort.dir === "asc") setSort(by, "desc");
+      else setSort(null, "asc");
+    });
+  }
+  $("sort-select").addEventListener("change", (event) => {
+    const [by, dir] = event.target.value.split(":");
+    setSort(by || null, dir || "asc");
+  });
 
   function renderActionItems() {
     const items = meeting.actionItems;
@@ -203,10 +497,15 @@
     $("progress-label").textContent = `${done} of ${items.length} done`;
     $("progress-fill").style.width = `${(done / items.length) * 100}%`;
 
+    // The status filters count only items that pass the search, owner and due date filters,
+    // so they show what each status filter would give. The line above and the progress bar
+    // always describe the whole meeting.
+    const visible = items.filter(matchesTools);
+    const visibleCount = (status) => visible.filter((item) => item.status === status).length;
     const filters = [
-      { id: "all", label: "All", count: items.length },
-      ...STATUSES.map((s) => ({ ...s, count: count(s.id) })),
-      { id: "overdue", label: "Overdue", count: overdue },
+      { id: "all", label: "All", count: visible.length },
+      ...STATUSES.map((s) => ({ ...s, count: visibleCount(s.id) })),
+      { id: "overdue", label: "Overdue", count: visible.filter(isOverdue).length },
     ];
     $("filters").replaceChildren(...filters.map((filter) => {
       const dot = el("span", filter.id === "all" ? "dot" : `dot s-${filter.id}`);
@@ -220,15 +519,26 @@
       return button;
     }));
 
+    const statusMatches = (item) => activeFilter === "all" || (activeFilter === "overdue" ? isOverdue(item) : item.status === activeFilter);
     const rows = inDisplayOrder(items)
-      .filter(({ item }) => activeFilter === "all" || (activeFilter === "overdue" ? isOverdue(item) : item.status === activeFilter))
+      .filter(({ item }) => matchesTools(item) && statusMatches(item))
       .map(({ item, index }) => itemRow(item, index));
+    const shown = rows.length;
     if (!rows.length) {
-      const cell = el("td", "no-items", "No action items with this status.");
+      const cell = el("td", "no-items", toolsActive() ? "No action items match these filters." : "No action items with this status.");
       cell.colSpan = 5;
       rows.push(el("tr", "", cell));
     }
     $("items-body").replaceChildren(...rows);
+
+    // "Showing 12 of 90 action items" and Clear filters, while anything is filtered.
+    const filtering = toolsActive() || activeFilter !== "all";
+    $("match-row").hidden = !filtering;
+    $("match-count").textContent = filtering ? `Showing ${shown} of ${items.length} action items` : "";
+    $("owner-filter").classList.toggle("is-active", Boolean(ownerFilter));
+    $("due-button").classList.toggle("is-active", Boolean(dueFilter));
+    $("due-button-label").textContent = dueLabel();
+    if (!$("due-calendar").hidden) renderCalendar();
   }
 
   function itemRow(item, index) {
@@ -266,7 +576,7 @@
     statusStack.append(note);
 
     return el("tr", item.status === "done" ? "row-done" : "",
-      el("td", "", el("div", "task-title", item.task)),
+      el("td", "", el("div", "task-title", ...highlight(item.task, searchText))),
       labelledCell("Owner", "", el("div", "owner", avatar(item.owner), item.owner)),
       labelledCell("Due", "due", item.due || "—"),
       labelledCell("Status", "", statusStack),
@@ -721,9 +1031,20 @@
 
     renderHeader();
     renderSummary();
+    fillOwnerFilter();
     renderActionItems();
     renderTranscript();
     $("transcript-search").addEventListener("input", (event) => renderTranscript(event.target.value));
+    $("item-search").addEventListener("input", (event) => {
+      searchText = event.target.value.trim().toLowerCase();
+      renderActionItems();
+    });
+    $("owner-filter").addEventListener("change", (event) => {
+      ownerFilter = event.target.value;
+      renderActionItems();
+    });
+    setUpCalendar();
+    $("clear-filters").addEventListener("click", clearFilters);
     $("download-text").addEventListener("click", downloadTranscriptText);
     $("download-pdf").addEventListener("click", downloadTranscriptPdf);
     $("export-button").addEventListener("click", exportMeetingPdf);

@@ -19,6 +19,9 @@
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 3 10.5 13.5M21 3l-6.5 18-4-7.5L3 9.5 21 3Z"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6.5 9.5 5.5 5.5 5.5-5.5"/></symbol>
+    <symbol id="i-sort" viewBox="0 0 24 24"><path d="m8 9.5 4-4 4 4M8 14.5l4 4 4-4"/></symbol>
+    <symbol id="i-sort-asc" viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></symbol>
+    <symbol id="i-sort-desc" viewBox="0 0 24 24"><path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/></symbol>
   </svg>
 
   <header class="topbar">
@@ -86,10 +89,49 @@
               <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
             </div>
             <div class="filters" id="filters" role="group" aria-label="Filter action items"></div>
+            <!-- Search, owner and due date narrow the list; they combine with the status filters above. -->
+            <div class="item-tools">
+              <label class="search item-search">
+                <svg class="icon"><use href="#i-search"/></svg>
+                <input type="search" id="item-search" placeholder="Search tasks" aria-label="Search action items">
+              </label>
+              <select class="tool-select" id="owner-filter" aria-label="Filter by owner">
+                <option value="">All owners</option>
+              </select>
+              <!-- Due date: a button that opens a month calendar (filled in by app.js). -->
+              <div class="due-picker">
+                <button type="button" class="tool-select due-button" id="due-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="due-calendar">
+                  <svg class="icon"><use href="#i-calendar"/></svg>
+                  <span id="due-button-label">Any due date</span>
+                  <svg class="icon due-chevron"><use href="#i-chevron"/></svg>
+                </button>
+                <div class="due-calendar" id="due-calendar" role="dialog" aria-label="Filter by due date" hidden></div>
+              </div>
+            </div>
+            <div class="match-row" id="match-row" hidden>
+              <span id="match-count" role="status"></span>
+              <button type="button" class="clear-filters" id="clear-filters">Clear filters</button>
+            </div>
+            <!-- On narrow screens the table header is hidden, so sorting moves here. -->
+            <label class="sort-mobile">Sort
+              <select id="sort-select">
+                <option value="">Default order</option>
+                <option value="owner:asc">Owner A–Z</option>
+                <option value="owner:desc">Owner Z–A</option>
+                <option value="due:asc">Due: soonest first</option>
+                <option value="due:desc">Due: latest first</option>
+              </select>
+            </label>
             <div class="table-wrap">
               <table class="items">
                 <colgroup><col class="c-task"><col class="c-owner"><col class="c-due"><col class="c-status"><col class="c-follow-up"></colgroup>
-                <thead><tr><th>Task</th><th>Owner</th><th>Due</th><th>Status</th><th>Follow-up</th></tr></thead>
+                <thead><tr>
+                  <th>Task</th>
+                  <th aria-sort="none"><button class="sort-btn" type="button" data-sort="owner">Owner<svg class="icon"><use href="#i-sort"/></svg></button></th>
+                  <th aria-sort="none"><button class="sort-btn" type="button" data-sort="due">Due<svg class="icon"><use href="#i-sort"/></svg></button></th>
+                  <th>Status</th>
+                  <th>Follow-up</th>
+                </tr></thead>
                 <tbody id="items-body"></tbody>
               </table>
             </div>

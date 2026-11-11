@@ -268,6 +268,102 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
   text-align: left;
   text-transform: uppercase;
 }
+/* Owner and Due headers sort the table: ↕ when not sorted, ↑ or ↓ (in blue) when sorted. */
+.sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.sort-btn .icon { width: 13px; height: 13px; stroke-width: 2; opacity: 0.45; }
+.sort-btn:hover .icon { opacity: 0.8; }
+.sort-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 4px; }
+th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn { color: var(--blue); }
+th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opacity: 1; }
+/* Search, owner and due date filters above the table. A dropdown turns blue while it filters. */
+.item-tools { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.item-search { flex: 1 1 240px; height: 40px; }
+.tool-select {
+  flex: 0 1 auto;
+  min-width: 160px;
+  max-width: 100%;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.tool-select:focus-visible { outline: 0; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.tool-select.is-active { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); font-weight: 600; }
+
+/* Due date: a button that opens a month calendar under it. */
+.due-picker { position: relative; flex: 0 1 auto; }
+.due-button { display: inline-flex; align-items: center; gap: 8px; min-width: 190px; text-align: left; white-space: nowrap; }
+.due-button .icon { width: 16px; height: 16px; }
+.due-button .due-chevron { margin-left: auto; }
+.due-calendar {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: 304px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgba(17, 24, 39, 0.14);
+}
+.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.cal-title { font-size: 14px; font-weight: 600; }
+.cal-nav { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--text-2); cursor: pointer; }
+.cal-nav:hover { background: #f3f4f6; }
+.cal-nav .icon { width: 16px; height: 16px; }
+.cal-prev .icon { transform: rotate(90deg); }
+.cal-next .icon { transform: rotate(-90deg); }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 2px; }
+.cal-weekday { padding: 4px 0; color: var(--text-3); font-size: 11px; font-weight: 600; text-align: center; text-transform: uppercase; letter-spacing: 0.04em; }
+.cal-day { position: relative; height: 36px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.cal-day:hover { background: #f3f4f6; }
+.cal-day:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.cal-day.other-month { color: #b8bcc4; }
+.cal-day.today { box-shadow: inset 0 0 0 1px var(--blue); color: var(--blue); font-weight: 600; }
+/* A dot under days with tasks due: blue, or orange if any of them are overdue. */
+.cal-day:is(.has-items, .has-overdue)::after { content: ""; position: absolute; bottom: 4px; left: 50%; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: var(--blue); }
+.cal-day.has-overdue::after { background: #e8710a; }
+/* The picked day or range. */
+.cal-day.in-range { border-radius: 0; background: var(--blue-soft); }
+.cal-day.range-start { border-radius: 8px 0 0 8px; }
+.cal-day.range-end { border-radius: 0 8px 8px 0; }
+.cal-day.range-start.range-end { border-radius: 8px; }
+.cal-day:is(.range-start, .range-end) { background: var(--blue); box-shadow: none; color: #fff; font-weight: 600; }
+.cal-day:is(.range-start, .range-end)::after { background: #fff; }
+.cal-hint { margin: 10px 0 4px; color: var(--text-2); font-size: 12px; line-height: 1.4; }
+.cal-legend { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; color: var(--text-3); font-size: 11.5px; }
+.cal-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); }
+.cal-dot-overdue { margin-left: 8px; background: #e8710a; }
+.cal-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+.cal-preset { height: 28px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer; }
+.cal-preset:hover { background: #f9fafb; }
+.cal-preset[aria-pressed="true"] { border-color: var(--blue); background: var(--blue); color: #fff; }
+.cal-clear { margin-left: auto; padding: 0; border: 0; background: none; color: var(--blue); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+/* "Showing 12 of 90 action items" and Clear filters, while anything is filtered. */
+.match-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: 13px; color: var(--text-2); }
+.clear-filters { padding: 0; border: 0; background: none; color: var(--blue); font: inherit; font-weight: 600; cursor: pointer; }
+.clear-filters:hover { text-decoration: underline; }
+/* Shown instead of the header buttons on narrow screens, where the header is hidden. */
+.sort-mobile { display: none; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: var(--text-2); }
+.sort-mobile select { height: 34px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px; }
 .items td { padding: 16px 12px 16px 0; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 14.5px; }
 .task-title { font-weight: 500; line-height: 1.45; }
 .row-done .task-title { color: var(--text-3); text-decoration: line-through; }
@@ -395,6 +491,7 @@ mark { border-radius: 2px; background: #fff1a8; color: inherit; }
 @media (max-width: 860px) {
   .items { min-width: 0; table-layout: auto; }
   .items colgroup, .items thead { display: none; }
+  .sort-mobile { display: flex; }
   .items, .items tbody, .items tr, .items td { display: block; width: 100%; }
   .items tr { padding: 16px 0; border-bottom: 1px solid var(--border); }
   .items td { padding: 0; border: 0; }
@@ -410,6 +507,12 @@ mark { border-radius: 2px; background: #fff1a8; color: inherit; }
 }
 
 @media (max-width: 720px) {
+  /* Search on its own line, the two dropdowns side by side under it. */
+  .item-search { flex-basis: 100%; }
+  .tool-select, .due-picker { flex: 1 1 0; min-width: 0; }
+  .due-button { width: 100%; min-width: 0; }
+  .due-button span { overflow: hidden; text-overflow: ellipsis; }
+  .due-calendar { width: min(304px, calc(100vw - 32px)); }
   .topbar-inner { padding: 0 16px; }
   .breadcrumb { display: none; }
   .page { padding: 22px 16px 48px; }
