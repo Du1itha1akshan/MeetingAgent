@@ -12,7 +12,8 @@
 </head>
 <body>
   <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true">
-    <symbol id="i-gear" viewBox="0 0 24 24"><path d="M10.61 2.1L13.39 2.1L13.84 4.63L15.91 5.49L18.02 4.01L19.99 5.98L18.51 8.09L19.37 10.16L21.9 10.61L21.9 13.39L19.37 13.84L18.51 15.91L19.99 18.02L18.02 19.99L15.91 18.51L13.84 19.37L13.39 21.9L10.61 21.9L10.16 19.37L8.09 18.51L5.98 19.99L4.01 18.02L5.49 15.91L4.63 13.84L2.1 13.39L2.1 10.61L4.63 10.16L5.49 8.09L4.01 5.98L5.98 4.01L8.09 5.49L10.16 4.63Z"/><circle cx="12" cy="12" r="3.2"/></symbol>
+    <!-- GitHub's mark, from GitHub's Octicons (mark-github). -->
+    <symbol id="i-github" viewBox="0 0 16 16"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></symbol>
     <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M8 3v4M16 3v4M3.5 10h17"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></symbol>
@@ -38,12 +39,8 @@
         <span id="crumb-current"></span>
       </nav>
       <div class="topbar-actions">
-        <div class="menu-wrap">
-          <button class="icon-btn" type="button" id="settings-button" aria-label="Settings" aria-haspopup="menu" aria-expanded="false" aria-controls="settings-menu"><svg class="icon"><use href="#i-gear"/></svg></button>
-          <div class="menu menu-attached" id="settings-menu" role="menu" hidden>
-            <button class="menu-item" type="button" role="menuitem" id="connect-github">Connect GitHub</button>
-          </div>
-        </div>
+        <!-- Doesn't do anything yet. -->
+        <button class="btn btn-outline github-btn" type="button" id="connect-github" aria-label="Connect GitHub"><svg class="icon icon-filled"><use href="#i-github"/></svg><span class="btn-label">Connect GitHub</span></button>
       </div>
     </div>
   </header>
@@ -113,15 +110,15 @@
               <button type="button" class="clear-filters" id="clear-filters">Clear filters</button>
             </div>
             <!-- On narrow screens the table header is hidden, so sorting moves here. -->
-            <label class="sort-mobile">Sort
-              <select id="sort-select">
+            <div class="sort-mobile"><span aria-hidden="true">Sort</span>
+              <select id="sort-select" aria-label="Sort action items">
                 <option value="">Default order</option>
                 <option value="owner:asc">Owner A–Z</option>
                 <option value="owner:desc">Owner Z–A</option>
                 <option value="due:asc">Due: soonest first</option>
                 <option value="due:desc">Due: latest first</option>
               </select>
-            </label>
+            </div>
             <div class="table-wrap">
               <table class="items">
                 <colgroup><col class="c-task"><col class="c-owner"><col class="c-due"><col class="c-status"><col class="c-follow-up"></colgroup>

@@ -42,6 +42,8 @@ h1, h2, h3, p { margin: 0; }
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+/* Solid icons, such as the GitHub mark, are drawn with a fill instead of a line. */
+.icon-filled { fill: currentColor; stroke: none; }
 
 :is(button, a, select, input):focus-visible {
   outline: 2px solid var(--blue);
@@ -158,7 +160,7 @@ h1 { font-size: 30px; line-height: 1.25; font-weight: 600; letter-spacing: -0.01
 .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
 
-/* ---- Dropdown menus (settings, transcript download) ---- */
+/* ---- Dropdown menus (transcript download, more speakers) ---- */
 .menu-wrap { position: relative; }
 .menu {
   position: absolute;
@@ -172,8 +174,6 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
   background: var(--surface);
   box-shadow: 0 8px 24px rgba(17, 24, 39, 0.12);
 }
-/* Sits directly on the button's bottom border. */
-.menu-attached { top: 100%; }
 /* Opens to the right of its button, for buttons near the left of the page. */
 .menu-left { left: 0; right: auto; }
 .menu-item {
@@ -189,6 +189,52 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
   cursor: pointer;
 }
 .menu-item:hover, .menu-item:focus-visible { background: #f3f4f6; outline: none; }
+
+/* ---- Dropdowns (status, owner, owner filter, sort) ----
+   A button showing the choice, and a list the page draws that always opens below it (app.js
+   sets its position; it's fixed so the table's scroll area can't clip it). */
+.dd { display: inline-flex; min-width: 0; max-width: 100%; }
+.dd-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dd-button > .icon { flex: none; width: 16px; height: 16px; margin-left: auto; color: var(--text-3); }
+/* Every option's text in one spot, only the chosen one visible, so the button fits the longest. */
+.dd-label { display: grid; grid-template-columns: minmax(0, max-content); flex: 1 1 auto; min-width: 0; }
+.dd-label > span { grid-area: 1 / 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; visibility: hidden; }
+.dd-label > .dd-current { visibility: visible; }
+.dd-list {
+  position: fixed;
+  z-index: 40;
+  max-width: min(320px, calc(100vw - 16px));
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.12);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 400;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.dd-option { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; white-space: nowrap; cursor: pointer; }
+.dd-option.active { background: #f3f4f6; }
+.dd-option[aria-selected="true"] { color: var(--blue); font-weight: 600; }
+.dd-option[aria-disabled="true"] { background: none; color: var(--text-3); cursor: not-allowed; }
+/* A line under an option, e.g. the current owner shown first. */
+.dd-option.dd-separated { position: relative; margin-bottom: 9px; }
+.dd-option.dd-separated::after { content: ""; position: absolute; right: 4px; bottom: -5px; left: 4px; height: 1px; background: var(--border); }
 
 /* ---- Summary ---- */
 .summary-text { max-width: 660px; margin-top: 18px; color: #1f2937; line-height: 1.55; }
@@ -253,9 +299,10 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
 
 .table-wrap { overflow-x: auto; }
 .items { width: 100%; min-width: 760px; border-collapse: collapse; table-layout: fixed; }
-.c-task { width: 32%; }
-.c-owner { width: 21%; }
-.c-due { width: 12%; }
+.c-task { width: 25%; }
+.c-owner { width: 22%; }
+/* Wide enough for a date plus "Overdue · 373 days" under it. */
+.c-due { width: 18%; }
 .c-status { width: 21%; }
 .c-follow-up { width: 14%; }
 .items th {
@@ -289,12 +336,13 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn { color: var(
 th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opacity: 1; }
 /* Search, owner and due date filters above the table. A dropdown turns blue while it filters. */
 .item-tools { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
-.item-search { flex: 1 1 240px; height: 40px; }
+/* The search box keeps the shared .search height (44px); the owner and due date filters match it. */
+.item-search { flex: 1 1 240px; }
 .tool-select {
   flex: 0 1 auto;
   min-width: 160px;
   max-width: 100%;
-  height: 40px;
+  height: 44px;
   padding: 0 10px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
@@ -306,6 +354,9 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
 }
 .tool-select:focus-visible { outline: 0; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 .tool-select.is-active { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); font-weight: 600; }
+.tool-select.is-active > .icon { color: var(--blue); }
+/* The owner filter's dropdown sits in a wrapper, so the wrapper takes the filter's place in the row. */
+.item-tools > .dd { flex: 0 1 auto; min-width: 160px; }
 
 /* Due date: a button that opens a month calendar under it. */
 .due-picker { position: relative; flex: 0 1 auto; }
@@ -363,12 +414,69 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
 .clear-filters:hover { text-decoration: underline; }
 /* Shown instead of the header buttons on narrow screens, where the header is hidden. */
 .sort-mobile { display: none; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: var(--text-2); }
-.sort-mobile select { height: 34px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px; }
+.sort-mobile .dd-button { height: 34px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px; }
 .items td { padding: 16px 12px 16px 0; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 14.5px; }
 .task-title { font-weight: 500; line-height: 1.45; }
 .row-done .task-title { color: var(--text-3); text-decoration: line-through; }
 .row-done .due { color: var(--text-3); }
-.owner { display: flex; align-items: center; gap: 10px; }
+.owner { display: flex; align-items: center; gap: 8px; }
+
+/* Editable owner and due date: the name or date itself is a button (grey on hover, like the
+   Status dropdown), an "Edited" label when changed, and a small editor panel under the cell. */
+.editable { position: relative; }
+/* The padding gives the hover background room around the text; the negative margin keeps the
+   text exactly where it would be without the button. */
+.cell-btn {
+  display: flex;
+  max-width: calc(100% + 16px);
+  margin: -6px -8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* The same grey as an Open status pill. */
+.cell-btn:hover, .cell-btn.open { background: #eef0f3; }
+.cell-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; }
+.due-view.cell-btn { align-items: flex-start; }
+/* The name or date, with "Edited" under it. */
+.cell-text { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; }
+/* Names and dates wrap between words; a word is split only if it can't fit on a line by itself. */
+.owner-name, .due-text { overflow-wrap: break-word; }
+.edited-badge { flex: none; padding: 1px 7px; border-radius: 999px; background: #eef0f3; color: var(--text-2); font-size: 11px; font-weight: 600; cursor: help; }
+.cell-edit {
+  position: absolute;
+  top: calc(100% - 8px);
+  left: 0;
+  z-index: 15;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  width: max-content;
+  max-width: 280px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(17, 24, 39, 0.14);
+}
+.cell-editor { height: 36px; max-width: 100%; padding: 0 8px; border: 1px solid var(--blue); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 14px; }
+.cell-editor:focus-visible { outline: 0; box-shadow: 0 0 0 3px var(--blue-soft); }
+.dd-button.cell-editor { min-width: 200px; }
+/* The due date editor's calendar (same look as the due date filter's), on its own line above
+   No date / Reset / Cancel. Past days and the month before this one are greyed out. */
+.edit-cal { flex: 1 0 100%; width: 252px; }
+.cal-day:disabled { background: none; color: #c9ccd2; cursor: not-allowed; }
+.cal-nav:disabled { background: none; opacity: 0.35; cursor: not-allowed; }
+.link-btn { padding: 0; border: 0; background: none; color: var(--blue); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.link-btn:hover { text-decoration: underline; }
+.link-muted { color: var(--text-2); }
 
 .status { position: relative; display: inline-flex; align-items: center; color: var(--ink); }
 .status::before {
@@ -381,9 +489,7 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
   background: var(--dot);
   pointer-events: none;
 }
-.status select {
-  appearance: none;
-  -webkit-appearance: none;
+.status .dd-button {
   min-width: 156px;
   height: 36px;
   padding: 0 36px 0 30px;
@@ -393,17 +499,28 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
   color: inherit;
   font-size: 14px;
   font-weight: 600;
-  cursor: pointer;
 }
+.status .dd-button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .status .icon { position: absolute; right: 12px; width: 16px; height: 16px; pointer-events: none; }
-/* The status dropdown, then the Overdue tag and save note under it. */
+/* The status dropdown, then the save note under it. */
 .status-stack { display: flex; flex-direction: column; align-items: flex-start; }
-/* "Overdue · 5 days" with a clock, no box, lined up with the status text (13px in, like its dot). */
+/* The due date, then "Overdue · 5 days" right under it. */
+.due-stack { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+/* Cells are centred vertically. An empty space above the date, as tall as the Overdue line below
+   it (5px gap + 16px), keeps the date itself in the middle, level with the owner's name. */
+.due-stack.has-overdue::before { content: ""; flex: none; height: 21px; }
+/* "Overdue · 5 days" with a clock, no box, lined up with the date's first letter. */
 .overdue-tag {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin: 7px 0 0 13px;
+  /* It may use most of the gap before the Status column; only if it still can't fit (1,000+ days)
+     does "· N days" move under "Overdue". */
+  flex-wrap: wrap;
+  width: max-content;
+  max-width: calc(100% + 10px);
+  min-height: 16px;
+  margin: 5px 0 0;
   color: #c2410c;
   font-size: 12px;
   font-weight: 600;
@@ -492,6 +609,10 @@ mark { border-radius: 2px; background: #fff1a8; color: inherit; }
   .items { min-width: 0; table-layout: auto; }
   .items colgroup, .items thead { display: none; }
   .sort-mobile { display: flex; }
+  .cell-edit { left: auto; right: 0; top: 100%; }
+  /* Right-aligned next to its label, so the button hugs the right edge instead. */
+  .cell-btn { margin: -6px -8px -6px 0; max-width: calc(100% + 8px); }
+  .due-stack { align-items: flex-end; }
   .items, .items tbody, .items tr, .items td { display: block; width: 100%; }
   .items tr { padding: 16px 0; border-bottom: 1px solid var(--border); }
   .items td { padding: 0; border: 0; }
@@ -509,7 +630,7 @@ mark { border-radius: 2px; background: #fff1a8; color: inherit; }
 @media (max-width: 720px) {
   /* Search on its own line, the two dropdowns side by side under it. */
   .item-search { flex-basis: 100%; }
-  .tool-select, .due-picker { flex: 1 1 0; min-width: 0; }
+  .tool-select, .due-picker, .item-tools > .dd { flex: 1 1 0; min-width: 0; }
   .due-button { width: 100%; min-width: 0; }
   .due-button span { overflow: hidden; text-overflow: ellipsis; }
   .due-calendar { width: min(304px, calc(100vw - 32px)); }
@@ -523,4 +644,11 @@ mark { border-radius: 2px; background: #fff1a8; color: inherit; }
   .transcript-head { padding: 20px 16px 14px; }
   .transcript-head .card-head { flex-direction: row; }
   .transcript-list { padding: 4px 16px; }
+}
+
+/* Narrow phones: the GitHub button shows just the mark (its name stays "Connect GitHub"). */
+@media (max-width: 480px) {
+  .github-btn { width: 44px; padding: 0; justify-content: center; }
+  .github-btn .btn-label { display: none; }
+  .github-btn .icon { width: 20px; height: 20px; }
 }

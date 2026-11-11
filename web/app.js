@@ -211,7 +211,8 @@
 
   const toolsActive = () => Boolean(searchText || ownerFilter || dueFilter);
 
-  // Every owner A–Z with how many tasks they have, and "Unassigned" last.
+  // Every owner A–Z with how many tasks they have, and "Unassigned" last. Rebuilt after an owner
+  // is changed; if the chosen owner no longer has any tasks, the filter goes back to everyone.
   function fillOwnerFilter() {
     const counts = new Map();
     for (const item of meeting.actionItems) counts.set(ownerKey(item), (counts.get(ownerKey(item)) ?? 0) + 1);
@@ -227,7 +228,11 @@
       option.value = "__none__";
       options.push(option);
     }
-    $("owner-filter").append(...options);
+    const all = el("option", "", "All owners");
+    all.value = "";
+    $("owner-filter").replaceChildren(all, ...options);
+    if (ownerFilter && !counts.has(ownerFilter)) ownerFilter = "";
+    $("owner-filter").value = ownerFilter;
   }
 
   function clearFilters() {
@@ -464,6 +469,8 @@
   });
 
   function renderActionItems() {
+    // The table is about to be rebuilt, so close a dropdown list that's open inside it.
+    if (document.querySelector("#items-body .dd-list:not([hidden])")) openDropdown?.();
     const items = meeting.actionItems;
     $("actions-body").hidden = !items.length;
     if (!items.length) {
@@ -555,33 +562,328 @@
       item.status = select.value;
       renderActionItems();
       // The table is rebuilt, so put focus back on this item's status.
-      document.querySelector(`#items-body select[data-index="${index}"]`)?.focus();
+      focusSelect(document.querySelector(`#items-body select[data-index="${index}"]`));
       saveStatus(item, index);
     });
+    // Each status in the list has its coloured dot, like the filters above the table.
+    const statusDropdown = enhanceSelect(select, { chevron: false, optionContent: (option) => [el("span", `dot s-${option.value}`), option.textContent] });
 
     const note = el("div", item.note?.error ? "save-note save-error" : "save-note", item.note?.text ?? "");
     note.dataset.note = index;
     note.setAttribute("role", "status");
 
-    // Shown, not chosen: the tag goes away when the item is marked Done.
-    const statusStack = el("div", "status-stack", el("span", `status s-${item.status}`, select, icon("chevron")));
-    if (isOverdue(item)) {
-      // A clock, "Overdue" and how late it is, e.g. "Overdue · 5 days".
-      const days = overdueDays(item);
-      const tag = el("span", "overdue-tag", icon("clock"), "Overdue",
-        el("span", "overdue-days", ` · ${days} ${days === 1 ? "day" : "days"}`));
-      tag.title = `Due ${item.due}. Set automatically; it clears when the item is marked Done.`;
-      statusStack.append(tag);
-    }
-    statusStack.append(note);
+    const statusStack = el("div", "status-stack", el("span", `status s-${item.status}`, statusDropdown, icon("chevron")), note);
 
     return el("tr", item.status === "done" ? "row-done" : "",
       el("td", "", el("div", "task-title", ...highlight(item.task, searchText))),
-      labelledCell("Owner", "", el("div", "owner", avatar(item.owner), item.owner)),
-      labelledCell("Due", "due", item.due || "—"),
+      ownerCell(item, index),
+      dueCell(item, index),
       labelledCell("Status", "", statusStack),
       labelledCell("Follow-up", "", followUpCell(item, index)),
     );
+  }
+
+  // ---- Editing the owner and due date ----
+  // Clicking an owner or due date opens a small editor under it. Changes are saved in
+  // the meeting's status file on top of Claude's values, which stay visible on hover ("Edited").
+  // Reset puts Claude's value back. Only one editor is open at a time.
+  let editing = null; // { index, field: "owner" | "due" }
+  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const EDIT_ERRORS = {
+    item_changed: "This meeting has changed since you opened it. Reload the page.",
+    not_found: "This meeting is no longer available.",
+    invalid_due: "That date couldn't be saved.",
+    invalid_owner: "That owner couldn't be saved.",
+    due_in_past: "Pick today or a later date.",
+  };
+
+  // Labels that stand in for a person rather than name one, e.g. Fireflies' "@1" for a speaker it
+  // couldn't identify, "Speaker 2", "Unknown speaker" or "Guest". Real names have at least two
+  // letters (in any language) and don't start with "@".
+  const PLACEHOLDER_NAME = /^(speaker|participant|attendee|guest|unknown|user)(\s+(speaker|user|participant))?\s*#?\s*\d*$/i;
+  const isRealName = (name) => !name.startsWith("@") && (name.match(/\p{L}/gu)?.length ?? 0) >= 2 && !PLACEHOLDER_NAME.test(name);
+
+  // Everyone with a real name who owns a task or speaks in the meeting, A–Z, then "Unassigned".
+  function ownerChoices() {
+    const names = new Map();
+    const add = (name) => {
+      const clean = String(name ?? "").trim();
+      if (clean && !NO_OWNER.test(clean) && isRealName(clean) && !names.has(clean.toLowerCase())) names.set(clean.toLowerCase(), clean);
+    };
+    meeting.actionItems.forEach((item) => { add(item.owner); add(item.original?.owner); });
+    speakers.forEach(add);
+    return [...names.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })).concat("Unassigned");
+  }
+
+  // "Thu 5 Nov", with the year only when it isn't the meeting's, as Claude writes them.
+  function dueFromDate(date) {
+    const meetingYear = new Date(meeting.date ?? Date.now()).getFullYear();
+    const y = date.getFullYear();
+    return `${DAY_NAMES[date.getDay()]} ${date.getDate()} ${MONTH_NAMES[date.getMonth()]}${y !== meetingYear ? ` ${y}` : ""}`;
+  }
+
+  const editedField = (item, field) => Boolean(item.original) && item.original[field] !== item[field];
+
+  // The owner or due date itself is the button: grey on hover like the Status dropdown, and a
+  // click (or tap, or Enter) opens the editor. Nothing extra sits next to the text.
+  function editTrigger(item, index, field, className, ...content) {
+    const button = el("button", `cell-btn ${className}`, ...content);
+    button.type = "button";
+    button.dataset.edit = `${index}:${field}`;
+    const label = field === "owner" ? "owner" : "due date";
+    const value = field === "owner" ? item.owner : item.due || "none";
+    const edited = editedField(item, field) ? ` (edited; originally ${item.original[field] || "none"})` : "";
+    button.setAttribute("aria-label", `${field === "owner" ? "Owner" : "Due date"}: ${value}${edited}. Change ${label} of "${item.task}"`);
+    button.title = `Click to change the ${label}`;
+    if (editing?.index === index && editing.field === field) button.classList.add("open");
+    button.setAttribute("aria-expanded", String(button.classList.contains("open")));
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (button.classList.contains("open")) stopEditing(true);
+      else startEditing(index, field);
+    });
+    return button;
+  }
+
+  function editedBadge(item, field) {
+    const original = item.original[field] || "—";
+    const badge = el("span", "edited-badge", "Edited");
+    const when = item.editedAt ? ` · changed ${new Date(item.editedAt).toLocaleString()}` : "";
+    badge.title = `Originally: ${original}${when}`;
+    badge.setAttribute("aria-label", `Edited. Originally ${original}.`);
+    return badge;
+  }
+
+  function detailNote(item, index, field) {
+    const note = item.detailNote?.field === field ? item.detailNote : null;
+    const node = el("div", note?.error ? "save-note save-error" : "save-note", note?.text ?? "");
+    node.dataset.detailNote = `${index}:${field}`;
+    node.setAttribute("role", "status");
+    return node;
+  }
+
+  function ownerCell(item, index) {
+    // Avatar, then the name with "Edited" under it; the whole thing opens the editor.
+    const text = el("span", "cell-text", el("span", "owner-name", ...highlight(item.owner, searchText)));
+    if (editedField(item, "owner")) text.append(editedBadge(item, "owner"));
+    const view = editTrigger(item, index, "owner", "owner", avatar(item.owner), text);
+    const cell = labelledCell("Owner", "editable", view, detailNote(item, index, "owner"));
+    if (editing?.index === index && editing.field === "owner") {
+      const select = el("select", "cell-editor");
+      select.setAttribute("aria-label", `Owner of "${item.task}"`);
+      const current = NO_OWNER.test(String(item.owner ?? "").trim()) ? "Unassigned" : item.owner;
+      const choices = ownerChoices();
+      const selected = choices.find((name) => name.toLowerCase() === current.toLowerCase());
+      // If Claude gave the task a placeholder owner (like "@1"), show it at the top as the current
+      // value, greyed out, so the list doesn't pretend someone else is the owner.
+      if (!selected) {
+        const option = el("option", "", `${current} (current)`);
+        option.value = current;
+        option.disabled = option.selected = true;
+        option.dataset.separator = "true";
+        select.append(option);
+      }
+      // The current owner comes first, with a line under it; then everyone else A–Z, then Unassigned.
+      const ordered = selected ? [selected, ...choices.filter((name) => name !== selected)] : choices;
+      for (const name of ordered) {
+        const option = el("option", "", name);
+        option.value = name;
+        option.selected = name === selected;
+        if (name === selected) option.dataset.separator = "true";
+        select.append(option);
+      }
+      select.addEventListener("change", () => saveDetails(item, index, "owner", { owner: select.value }));
+      cell.append(editorPanel(item, index, "owner", enhanceSelect(select)));
+    }
+    return cell;
+  }
+
+  // A clock, "Overdue" and how late it is, e.g. "Overdue · 5 days". Shown, not chosen: it goes
+  // away when the item is marked Done or given a later due date.
+  function overdueTag(item) {
+    if (!isOverdue(item)) return null;
+    const days = overdueDays(item);
+    const tag = el("span", "overdue-tag", icon("clock"), "Overdue",
+      el("span", "overdue-days", ` · ${days} ${days === 1 ? "day" : "days"}`));
+    tag.title = `Due ${item.due}. Set automatically; it clears when the item is marked Done.`;
+    return tag;
+  }
+
+  function dueCell(item, index) {
+    // The date with "Edited" under it; the whole thing opens the editor.
+    const text = el("span", "cell-text", el("span", "due-text", ...highlight(item.due || "—", searchText)));
+    if (editedField(item, "due")) text.append(editedBadge(item, "due"));
+    const view = editTrigger(item, index, "due", "due-view", text);
+    // Under the date: "Overdue · 5 days" when it's late (outside the button, so it isn't clickable).
+    const stack = el("div", "due-stack", view);
+    const tag = overdueTag(item);
+    if (tag) {
+      stack.classList.add("has-overdue");
+      stack.append(tag);
+    }
+    const cell = labelledCell("Due", "due editable", stack, detailNote(item, index, "due"));
+    if (editing?.index === index && editing.field === "due") {
+      const noDate = el("button", "link-btn", "No date");
+      noDate.type = "button";
+      noDate.addEventListener("click", () => saveDetails(item, index, "due", { due: "—" }));
+      cell.append(editorPanel(item, index, "due", dueEditorCalendar(item, index), noDate));
+    }
+    return cell;
+  }
+
+  // The month calendar in the due date editor, drawn by the page (the browser's own date picker
+  // can't be styled), so it matches the due date filter. Click a day to save it. Days before
+  // today are greyed out and can't be picked; the current due date is shown in blue.
+  let editMonth = null; // first day of the month shown
+  let editFocus = null; // the day that has keyboard focus
+
+  function openDueEditor(item) {
+    const today = startOfDay(new Date());
+    const current = dueDate(item.due)?.date;
+    editFocus = current && current >= today ? current : today;
+    editMonth = new Date(editFocus.getFullYear(), editFocus.getMonth(), 1);
+  }
+
+  function dueEditorCalendar(item, index) {
+    const today = startOfDay(new Date());
+    const current = dueDate(item.due)?.date ?? null;
+    const redraw = (focusSelector) => {
+      const node = document.querySelector("#items-body .edit-cal");
+      if (!node) return;
+      const fresh = dueEditorCalendar(item, index);
+      node.replaceWith(fresh);
+      fresh.querySelector(focusSelector)?.focus();
+    };
+    const showMonth = (offset, focusSelector) => {
+      editMonth = new Date(editMonth.getFullYear(), editMonth.getMonth() + offset, 1);
+      editFocus = editMonth < today ? today : editMonth;
+      redraw(focusSelector);
+    };
+
+    // No going back past the current month: every day there would be in the past.
+    const prev = el("button", "cal-nav cal-prev", icon("chevron"));
+    prev.type = "button";
+    prev.setAttribute("aria-label", "Previous month");
+    prev.disabled = editMonth.getFullYear() === today.getFullYear() && editMonth.getMonth() <= today.getMonth();
+    prev.addEventListener("click", () => showMonth(-1, ".cal-prev:not(:disabled), .cal-day[tabindex='0']"));
+    const next = el("button", "cal-nav cal-next", icon("chevron"));
+    next.type = "button";
+    next.setAttribute("aria-label", "Next month");
+    next.addEventListener("click", () => showMonth(1, ".cal-next"));
+    const title = el("div", "cal-title", editMonth.toLocaleDateString("en-GB", { month: "long", year: "numeric" }));
+    title.setAttribute("aria-live", "polite");
+
+    const grid = el("div", "cal-grid");
+    grid.setAttribute("role", "grid");
+    grid.setAttribute("aria-label", `Due date of "${item.task}"`);
+    for (const name of ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]) grid.append(el("div", "cal-weekday", name));
+    const first = addDays(editMonth, -((editMonth.getDay() + 6) % 7)); // the Monday on or before the 1st
+    for (let i = 0; i < 42; i++) {
+      const day = addDays(first, i);
+      const past = day < today;
+      const selected = sameDay(day, current);
+      const classes = ["cal-day"];
+      if (day.getMonth() !== editMonth.getMonth()) classes.push("other-month");
+      if (sameDay(day, today)) classes.push("today");
+      if (selected) classes.push("range-start", "range-end");
+      const button = el("button", classes.join(" "), String(day.getDate()));
+      button.type = "button";
+      button.dataset.date = day.getTime();
+      button.disabled = past;
+      button.tabIndex = sameDay(day, editFocus) ? 0 : -1;
+      button.setAttribute("aria-pressed", String(selected));
+      button.setAttribute("aria-label", `${longDay(day)}${selected ? ", current due date" : ""}${past ? ", in the past" : ""}`);
+      if (past) button.title = "Pick today or a later date";
+      button.addEventListener("click", () => saveDetails(item, index, "due", { due: dueFromDate(day) }));
+      grid.append(button);
+    }
+    // Arrow keys move between days (never before today); Enter or Space picks the focused day.
+    grid.addEventListener("keydown", (event) => {
+      const moves = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
+      if (!(event.key in moves)) return;
+      event.preventDefault();
+      // Move from the day that has focus (it may have been reached by Tab or a click).
+      const from = event.target.dataset.date ? new Date(Number(event.target.dataset.date)) : editFocus;
+      const target = addDays(from, moves[event.key]);
+      editFocus = target < today ? today : target;
+      editMonth = new Date(editFocus.getFullYear(), editFocus.getMonth(), 1);
+      redraw(".cal-day[tabindex='0']");
+    });
+
+    return el("div", "edit-cal", el("div", "cal-head", prev, title, next), grid);
+  }
+
+  // The editor under a cell: the control, then Reset (when edited) and Cancel.
+  function editorPanel(item, index, field, ...controls) {
+    const panel = el("div", "cell-edit", ...controls);
+    if (editedField(item, field)) {
+      const reset = el("button", "link-btn", "Reset");
+      reset.type = "button";
+      reset.title = `Back to ${item.original[field] || "—"}`;
+      reset.addEventListener("click", () => saveDetails(item, index, field, { [field]: null }));
+      panel.append(reset);
+    }
+    const cancel = el("button", "link-btn link-muted", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => stopEditing(true));
+    panel.append(cancel);
+    panel.addEventListener("click", (event) => event.stopPropagation());
+    panel.addEventListener("keydown", (event) => { if (event.key === "Escape") stopEditing(true); });
+    return panel;
+  }
+
+  function startEditing(index, field) {
+    editing = { index, field };
+    if (field === "due") openDueEditor(meeting.actionItems[index]);
+    renderActionItems();
+    document.querySelector("#items-body .cell-edit :is(.dd-button, .cal-day[tabindex='0'])")?.focus();
+    // Clicking an owner opens the list of names straight away: one more click picks the new owner.
+    if (field === "owner") document.querySelector("#items-body .cell-edit select")?.showList?.();
+  }
+
+  function stopEditing(focus = false) {
+    if (!editing) return;
+    const { index, field } = editing;
+    editing = null;
+    renderActionItems();
+    if (focus) document.querySelector(`#items-body [data-edit="${index}:${field}"]`)?.focus();
+  }
+
+  // Clicking anywhere outside the open editor closes it without saving.
+  document.addEventListener("click", (event) => {
+    if (editing && !event.target.closest(".cell-edit")) stopEditing();
+  });
+
+  async function saveDetails(item, index, field, change) {
+    editing = null;
+    item.detailNote = { field, text: "Saving…" };
+    renderActionItems();
+    let error = null;
+    try {
+      const response = await fetch(`/api/meetings/${meetingLink.id}/action-items/${index}/details`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Meeting-Link": meetingLink.hash },
+        body: JSON.stringify({ task: item.task, ...change }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok) Object.assign(item, { owner: result.owner, due: result.due, original: result.original, editedAt: result.editedAt });
+      else error = EDIT_ERRORS[result.error] ?? "Couldn't save. Try again.";
+    } catch {
+      error = "Couldn't save. Check your connection and try again.";
+    }
+    item.detailNote = { field, text: error ?? "Saved", error: Boolean(error) };
+    fillOwnerFilter();
+    renderActionItems();
+    document.querySelector(`#items-body [data-edit="${index}:${field}"]`)?.focus();
+    if (!error) {
+      setTimeout(() => {
+        if (item.detailNote?.text !== "Saved") return;
+        item.detailNote = null;
+        const node = document.querySelector(`#items-body [data-detail-note="${index}:${field}"]`);
+        if (node) node.textContent = "";
+      }, 2000);
+    }
   }
 
   // ---- Follow-ups ----
@@ -960,7 +1262,7 @@
     });
   }
 
-  // ---- Menus (settings, transcript download, more speakers) ----
+  // ---- Menus (transcript download, more speakers) ----
   const closeMenus = [];
 
   function setUpMenu(button, menu) {
@@ -990,10 +1292,206 @@
     });
   }
 
-  setUpMenu($("settings-button"), $("settings-menu"));
   setUpMenu($("download-button"), $("download-menu"));
   document.addEventListener("click", () => closeMenus.forEach((c) => c()));
-  // "Connect GitHub" doesn't do anything yet.
+
+  // ---- Dropdowns ----
+  // The browser draws a <select>'s list itself and opens it upwards when there isn't room below,
+  // which page code can't change. So each <select> is hidden and shown as a button with a list the
+  // page draws, which always opens downwards; if there isn't room on screen, the page scrolls to
+  // make room instead. The hidden <select> stays the source of truth: its options, value and
+  // change events work as before, and setting its value updates the button.
+  // The list is position: fixed so the table's scroll area can't clip it.
+  let openDropdown = null; // closes the list that's open, if any
+  let dropdownCount = 0;
+  closeMenus.push(() => openDropdown?.());
+  const spacer = el("div", "dd-spacer"); // room below the page for a list opened near its end
+  spacer.setAttribute("aria-hidden", "true");
+  const nativeValue = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+
+  // options: chevron (default true) adds a chevron to the button; optionContent(option) returns
+  // what to show for an option (default: its text).
+  function enhanceSelect(select, { chevron = true, optionContent = (option) => [option.textContent] } = {}) {
+    const id = `dd-${++dropdownCount}`;
+    const label = el("span", "dd-label");
+    const button = el("button", "", label);
+    if (chevron) button.append(icon("chevron"));
+    button.type = "button";
+    button.id = `${id}-button`;
+    button.setAttribute("role", "combobox");
+    button.setAttribute("aria-haspopup", "listbox");
+    button.setAttribute("aria-controls", `${id}-list`);
+    button.setAttribute("aria-expanded", "false");
+    const list = el("ul", "dd-list");
+    list.id = `${id}-list`;
+    list.hidden = true;
+    list.setAttribute("role", "listbox");
+    select.hidden = true;
+    select.tabIndex = -1;
+    // A <select> already on the page (owner filter, sort) is swapped for the wrapper in place.
+    const wrap = el("span", "dd");
+    select.replaceWith(wrap);
+    wrap.append(select, button, list);
+    let active = -1; // option index highlighted in the open list
+
+    // The button shows the chosen option. Every option's text sits in the same spot, invisible, so
+    // the button is as wide as the longest one (like a <select>) and doesn't jump when it changes.
+    function sync() {
+      button.className = `dd-button ${select.className}`.trim();
+      button.setAttribute("aria-label", select.getAttribute("aria-label") ?? "");
+      button.disabled = select.disabled;
+      label.replaceChildren(...[...select.options].map((option, i) =>
+        el("span", i === select.selectedIndex ? "dd-current" : "", option.textContent)));
+    }
+    Object.defineProperty(select, "value", {
+      configurable: true,
+      get() { return nativeValue.get.call(this); },
+      set(value) { nativeValue.set.call(this, value); sync(); },
+    });
+    new MutationObserver(sync).observe(select, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "aria-label", "disabled"] });
+    sync();
+
+    const options = () => [...select.options];
+    const usable = (i) => i >= 0 && i < select.options.length && !select.options[i].disabled;
+
+    function setActive(i, scroll = true) {
+      active = i;
+      list.querySelectorAll(".dd-option").forEach((node, n) => node.classList.toggle("active", n === i));
+      const node = list.children[i];
+      if (node) {
+        button.setAttribute("aria-activedescendant", node.id);
+        if (scroll) node.scrollIntoView({ block: "nearest" });
+      } else {
+        button.removeAttribute("aria-activedescendant");
+      }
+    }
+
+    // Right under the button, never above it. Narrower than the screen, and no taller than the
+    // room left below the button (the list scrolls if it has more options).
+    function place() {
+      const rect = button.getBoundingClientRect();
+      list.style.minWidth = `${rect.width}px`;
+      list.style.top = `${rect.bottom + 4}px`;
+      list.style.maxHeight = `${Math.max(120, Math.min(300, innerHeight - rect.bottom - 12))}px`;
+      list.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - list.offsetWidth - 8))}px`;
+    }
+
+    function close() {
+      if (list.hidden) return;
+      list.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+      button.removeAttribute("aria-activedescendant");
+      removeEventListener("scroll", place, true);
+      removeEventListener("resize", place);
+      spacer.remove();
+      if (openDropdown === close) openDropdown = null;
+    }
+
+    function open() {
+      closeMenus.forEach((c) => c());
+      list.replaceChildren(...options().map((option, i) => {
+        const item = el("li", "dd-option", ...optionContent(option));
+        item.id = `${id}-${i}`;
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", String(i === select.selectedIndex));
+        if (option.disabled) item.setAttribute("aria-disabled", "true");
+        // An option marked data-separator gets a line under it (e.g. the current owner, listed first).
+        if (option.dataset.separator) item.classList.add("dd-separated");
+        // Keep focus on the button while clicking an option.
+        item.addEventListener("mousedown", (event) => event.preventDefault());
+        item.addEventListener("mouseenter", () => { if (!option.disabled) setActive(i, false); });
+        item.addEventListener("click", (event) => {
+          event.stopPropagation();
+          if (!option.disabled) choose(i);
+        });
+        return item;
+      }));
+      list.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      openDropdown = close;
+      // Not enough room below? Scroll the page up so the list fits under the button. Near the end of
+      // the page there may be nothing left to scroll, so add space below the page while it's open.
+      list.style.maxHeight = "";
+      const room = innerHeight - button.getBoundingClientRect().bottom - 12;
+      const needed = Math.min(300, list.offsetHeight); // its full height, border included
+      if (needed > room) {
+        const scrollable = document.documentElement.scrollHeight - innerHeight - scrollY;
+        if (needed - room > scrollable) {
+          spacer.style.height = `${Math.ceil(needed - room - scrollable)}px`;
+          document.body.append(spacer);
+        }
+        scrollBy(0, needed - room);
+      }
+      place();
+      addEventListener("scroll", place, true);
+      addEventListener("resize", place);
+      setActive(usable(select.selectedIndex) ? select.selectedIndex : options().findIndex((o) => !o.disabled));
+    }
+
+    // Lets other code open the list, e.g. the owner editor as soon as it appears.
+    select.showList = () => { if (list.hidden) open(); };
+
+    function choose(i) {
+      close();
+      button.focus();
+      if (i === select.selectedIndex) return;
+      select.selectedIndex = i;
+      sync();
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    // Moves the highlight to the next usable option in a direction, skipping disabled ones.
+    function step(from, by) {
+      for (let i = from + by; i >= 0 && i < select.options.length; i += by) if (usable(i)) return i;
+      return from;
+    }
+
+    let typed = "", typedAt = 0;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (list.hidden) open();
+      else close();
+    });
+    button.addEventListener("keydown", (event) => {
+      const isOpen = !list.hidden;
+      const last = select.options.length;
+      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        if (!isOpen) return open();
+        if (event.key === "ArrowDown") setActive(step(active, 1));
+        else if (event.key === "ArrowUp") setActive(step(active, -1));
+        else if (event.key === "Home") setActive(step(-1, 1));
+        else setActive(step(last, -1));
+      } else if ((event.key === "Enter" || event.key === " ") && isOpen) {
+        event.preventDefault();
+        if (usable(active)) choose(active);
+      } else if (event.key === "Escape" && isOpen) {
+        // Only closes the list; a second Escape reaches whatever the dropdown sits in.
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+      } else if (event.key === "Tab") {
+        close();
+      } else if (event.key.length === 1 && /\S/.test(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        // Typing jumps to the first option starting with what was typed.
+        typed = Date.now() - typedAt > 700 ? event.key : typed + event.key;
+        typedAt = Date.now();
+        const match = options().findIndex((o, i) => usable(i) && o.textContent.toLowerCase().startsWith(typed.toLowerCase()));
+        if (match >= 0) {
+          if (!isOpen) open();
+          setActive(match);
+        }
+      }
+    });
+    return wrap;
+  }
+
+  // Puts focus on the button that stands in for a <select>.
+  const focusSelect = (select) => select?.parentElement?.querySelector(".dd-button")?.focus();
+
+  enhanceSelect($("owner-filter"));
+  enhanceSelect($("sort-select"));
+  // The "Connect GitHub" button in the top bar doesn't do anything yet.
 
   // ---- Loading ----
   async function load() {

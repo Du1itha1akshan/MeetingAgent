@@ -3,9 +3,11 @@
 //                                                             and last follow-up times
 //   PUT  /api/meetings/{id}/action-items/{index}/status       body { status, task }
 //   POST /api/meetings/{id}/action-items/{index}/follow-up    body { task }: emails the owner
-// Anyone with a meeting's link can change its statuses and send follow-ups; there's no sign-in.
+//   PUT  /api/meetings/{id}/action-items/{index}/details      body { task, owner?, due? }
+// Anyone with a meeting's link can change statuses, owners and due dates and send follow-ups;
+// there's no sign-in.
 const { app } = require("@azure/functions");
-const { getMeeting, setActionItemStatus, sendFollowUp } = require("../meeting");
+const { getMeeting, setActionItemStatus, setActionItemDetails, sendFollowUp } = require("../meeting");
 
 const noStore = { "Cache-Control": "no-store" };
 
@@ -49,6 +51,13 @@ app.http("actionItemStatus", {
   authLevel: "anonymous",
   route: "meetings/{id}/action-items/{index}/status",
   handler: itemAction(setActionItemStatus),
+});
+
+app.http("actionItemDetails", {
+  methods: ["PUT"],
+  authLevel: "anonymous",
+  route: "meetings/{id}/action-items/{index}/details",
+  handler: itemAction(setActionItemDetails),
 });
 
 app.http("actionItemFollowUp", {

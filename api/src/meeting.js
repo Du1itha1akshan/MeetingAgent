@@ -86,15 +86,16 @@ function parseTranscript(markdown) {
   return lines;
 }
 
-// ---- Action item statuses and follow-ups ----
+// ---- Action item statuses, follow-ups and edits ----
 // Saved in a separate container ("meeting-status"), one <meeting_id>.json per meeting:
 //   { "items":     [ { "index": 2, "task": "…", "status": "done" } ],
 //     "followUps": [ { "index": 2, "task": "…", "sentAt": "2026-11-10T08:20:21.000Z" } ],
+//     "edits":     [ { "index": 2, "task": "…", "owner": "…", "due": "Thu 5 Nov", "editedAt": "…" } ],
 //     "updatedAt": "…" }
-// "items" holds only the items whose status someone has changed, and "followUps" the time of
-// the last follow-up email sent for an item. Items have no ID, so an entry applies only when
-// both its row number and its task text still match. The meeting files themselves are never
-// written.
+// "items" holds only the items whose status someone has changed, "followUps" the time of the
+// last follow-up email sent for an item, and "edits" an owner or due date someone changed (only
+// the fields that differ from Claude's). Items have no ID, so an entry applies only when both
+// its row number and its task text still match. The meeting files themselves are never written.
 const STATUS_IDS = ["open", "in_progress", "qa", "blocked", "done"];
 const STATUS_LABELS = { open: "Open", in_progress: "In progress", qa: "QA", blocked: "Blocked", done: "Done" };
 
@@ -115,35 +116,48 @@ function lastFollowUp(followUps, index, task) {
   return typeof sentAt === "string" && !Number.isNaN(Date.parse(sentAt)) ? sentAt : null;
 }
 
+// The owner and due date to show: someone's edit if there is one, otherwise Claude's.
+// `original` (Claude's values) and `editedAt` are set only when something was edited.
+function withEdits(item, index, edits) {
+  const edit = entryFor(edits, index, item.task);
+  const owner = typeof edit?.owner === "string" ? edit.owner : item.owner;
+  const due = typeof edit?.due === "string" ? edit.due : item.due;
+  const edited = owner !== item.owner || due !== item.due;
+  return {
+    owner,
+    due,
+    original: edited ? { owner: item.owner, due: item.due } : null,
+    editedAt: edited && typeof edit?.editedAt === "string" ? edit.editedAt : null,
+  };
+}
+
 // Puts one entry for a row in place of any earlier one, keeping row order.
 function upsert(entries, entry) {
   return [...entries.filter((e) => e && e.index !== entry.index), entry].sort((a, b) => a.index - b.index);
 }
 
 const statusFileUrl = (id, settings) => `${settings.MEETING_STATUS_CONTAINER_URL}/${id}.json?${settings.MEETING_STATUS_SAS}`;
+const listOf = (value) => (Array.isArray(value) ? value : []);
 
-// Reads a meeting's status file. Returns { items, followUps, etag }, with no etag if there's no file yet.
+// Reads a meeting's status file. Returns { items, followUps, edits, etag }, with no etag if
+// there's no file yet.
 async function readStatusFile(id, settings, fetchImpl) {
   const response = await fetchImpl(statusFileUrl(id, settings));
-  if (response.status === 404) return { items: [], followUps: [], etag: null };
+  if (response.status === 404) return { items: [], followUps: [], edits: [], etag: null };
   if (!response.ok) throw new StorageError(`status file read returned ${response.status}`);
   const saved = await response.json().catch(() => null);
-  return {
-    items: Array.isArray(saved?.items) ? saved.items : [],
-    followUps: Array.isArray(saved?.followUps) ? saved.followUps : [],
-    etag: response.headers.get("etag"),
-  };
+  return { items: listOf(saved?.items), followUps: listOf(saved?.followUps), edits: listOf(saved?.edits), etag: response.headers.get("etag") };
 }
 
-// Changes the status file: reads it, applies change({ items, followUps }), and writes the result
-// back only if nobody else saved in between (If-Match with the file's ETag, or If-None-Match: *
-// when creating it). Storage answers 412 when someone did, and then this starts again from a
-// fresh read. Both parts are always written, so saving a status keeps the follow-up times and
-// the other way round. Returns "saved", "busy" (gave up after 3 tries) or "storage_error".
+// Changes the status file: reads it, applies change({ items, followUps, edits }) (which returns
+// the whole new content), and writes it back only if nobody else saved in between (If-Match
+// with the file's ETag, or If-None-Match: * when creating it). Storage answers 412 when someone
+// did, and then this starts again from a fresh read. Every part is always written, so saving one
+// kind of change keeps the others. Returns "saved", "busy" (gave up after 3 tries) or "storage_error".
 async function updateStatusFile(id, settings, fetchImpl, change) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const { items, followUps, etag } = await readStatusFile(id, settings, fetchImpl);
-    const next = change({ items, followUps });
+    const { items, followUps, edits, etag } = await readStatusFile(id, settings, fetchImpl);
+    const next = change({ items, followUps, edits });
     const response = await fetchImpl(statusFileUrl(id, settings), {
       method: "PUT",
       headers: {
@@ -152,7 +166,7 @@ async function updateStatusFile(id, settings, fetchImpl, change) {
         "Content-Type": "application/json",
         ...(etag ? { "If-Match": etag } : { "If-None-Match": "*" }),
       },
-      body: JSON.stringify({ items: next.items, followUps: next.followUps, updatedAt: new Date().toISOString() }),
+      body: JSON.stringify({ items: next.items, followUps: next.followUps, edits: next.edits, updatedAt: new Date().toISOString() }),
     });
     if (response.status === 201) return "saved";
     // 412: changed since it was read. 409: the file was created since it was read.
@@ -183,7 +197,7 @@ async function getMeeting(id, hash, settings, fetchImpl = fetch) {
     // Until the status settings exist (before the template is redeployed), every item shows as open.
     [saved, statuses] = await Promise.all([
       readMeetingFile(id, settings, fetchImpl),
-      hasStatusSettings(settings) ? readStatusFile(id, settings, fetchImpl) : { items: [], followUps: [] },
+      hasStatusSettings(settings) ? readStatusFile(id, settings, fetchImpl) : { items: [], followUps: [], edits: [] },
     ]);
   } catch (error) {
     if (error instanceof StorageError) return { status: 502, body: { error: "storage_error" } };
@@ -202,6 +216,7 @@ async function getMeeting(id, hash, settings, fetchImpl = fetch) {
       summary: { overview, keyPoints },
       actionItems: actionItems.map((item, index) => ({
         ...item,
+        ...withEdits(item, index, statuses.edits),
         status: savedStatus(statuses.items, index, item.task),
         lastFollowUpAt: lastFollowUp(statuses.followUps, index, item.task),
       })),
@@ -227,13 +242,89 @@ async function setActionItemStatus(id, hash, indexText, body, settings, fetchImp
     if (!item) return { status: 404, body: { error: "not_found" } };
     if (body.task !== item.task) return { status: 409, body: { error: "item_changed" } };
 
-    const result = await updateStatusFile(id, settings, fetchImpl, ({ items, followUps }) => ({
-      items: upsert(items, { index, task: item.task, status: body.status }),
-      followUps,
+    const result = await updateStatusFile(id, settings, fetchImpl, (doc) => ({
+      ...doc,
+      items: upsert(doc.items, { index, task: item.task, status: body.status }),
     }));
     if (result === "saved") return { status: 200, body: { status: body.status } };
     if (result === "busy") return { status: 409, body: { error: "busy" } };
     return { status: 502, body: { error: "storage_error" } };
+  } catch (error) {
+    if (error instanceof StorageError) return { status: 502, body: { error: "storage_error" } };
+    throw error;
+  }
+}
+
+// ---- Editing an action item's owner and due date ----
+// Edited due dates use the same form Claude writes ("Thu 5 Nov", with the year only when it
+// isn't the meeting's), or "—" for no date, so Overdue, sorting and the filters keep working.
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const EDITED_DUE = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (\d{1,2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?: (\d{4}))?$/;
+
+// The date an edited due date means (UTC midnight), or null if it isn't a real date in our form.
+function editedDueDay(due, meetingDate) {
+  const match = EDITED_DUE.exec(due);
+  if (!match) return null;
+  const year = match[4] ? Number(match[4]) : localDate(validDate(meetingDate) ?? new Date()).year;
+  const month = MONTH_NAMES.indexOf(match[3]);
+  const day = new Date(Date.UTC(year, month, Number(match[2])));
+  return day.getUTCMonth() === month && DAY_NAMES[day.getUTCDay()] === match[1] ? day : null;
+}
+
+const isValidEditedDue = (due, meetingDate) => due === "—" || Boolean(editedDueDay(due, meetingDate));
+
+// A new due date can't be in the past. "Today" is Sri Lanka time, with a day of slack for
+// people in time zones behind it, whose today can still be yesterday in Sri Lanka.
+function isPastEditedDue(due, meetingDate, now) {
+  const day = editedDueDay(due, meetingDate);
+  if (!day) return false;
+  const t = localDate(now);
+  return day.getTime() < Date.UTC(t.year, t.month, t.day) - 86400000;
+}
+
+// A name: 1–80 characters, no line breaks or other control characters. "Unassigned" is allowed.
+const isValidOwner = (owner) => typeof owner === "string" && owner.trim().length > 0 && owner.trim().length <= 80 && !/[\u0000-\u001f]/.test(owner);
+
+// Handles PUT /api/meetings/{id}/action-items/{index}/details with body { task, owner?, due? }.
+// A field that's left out stays as it is; null puts back Claude's value. Only fields that differ
+// from Claude's are stored. Answers with the owner and due date to show now.
+async function setActionItemDetails(id, hash, indexText, body, settings, fetchImpl = fetch, now = () => new Date()) {
+  if (!hasMeetingSettings(settings) || !hasStatusSettings(settings)) return { status: 500, body: { error: "not_configured" } };
+  if (!isValidLink(id, hash, settings.MEETING_LINK_SECRET)) return { status: 404, body: { error: "not_found" } };
+  if (!/^\d{1,4}$/.test(indexText ?? "")) return { status: 400, body: { error: "invalid_index" } };
+  if (typeof body?.task !== "string") return { status: 400, body: { error: "invalid_task" } };
+  const hasOwner = "owner" in body, hasDue = "due" in body;
+  if (!hasOwner && !hasDue) return { status: 400, body: { error: "nothing_to_change" } };
+  if (hasOwner && body.owner !== null && !isValidOwner(body.owner)) return { status: 400, body: { error: "invalid_owner" } };
+  const index = Number(indexText);
+
+  try {
+    const saved = await readMeetingFile(id, settings, fetchImpl);
+    if (!saved) return { status: 404, body: { error: "not_found" } };
+    if (hasDue && body.due !== null && !isValidEditedDue(body.due, saved.date)) return { status: 400, body: { error: "invalid_due" } };
+    // Reset (null) can still bring back Claude's original date even if it has passed.
+    if (hasDue && body.due !== null && isPastEditedDue(body.due, saved.date, now())) return { status: 400, body: { error: "due_in_past" } };
+    const item = parseSummary(saved.summaryMarkdown).actionItems[index];
+    if (!item) return { status: 404, body: { error: "not_found" } };
+    if (body.task !== item.task) return { status: 409, body: { error: "item_changed" } };
+
+    const editedAt = now().toISOString();
+    let edits = [];
+    const result = await updateStatusFile(id, settings, fetchImpl, (doc) => {
+      const current = entryFor(doc.edits, index, item.task) ?? {};
+      const owner = hasOwner ? (body.owner === null ? undefined : body.owner.trim()) : current.owner;
+      const due = hasDue ? (body.due === null ? undefined : body.due) : current.due;
+      const entry = { index, task: item.task };
+      if (owner !== undefined && owner !== item.owner) entry.owner = owner;
+      if (due !== undefined && due !== (item.due || "—") && due !== item.due) entry.due = due;
+      edits = doc.edits.filter((e) => e && e.index !== index);
+      if ("owner" in entry || "due" in entry) edits = upsert(edits, { ...entry, editedAt });
+      return { ...doc, edits };
+    });
+    if (result === "busy") return { status: 409, body: { error: "busy" } };
+    if (result !== "saved") return { status: 502, body: { error: "storage_error" } };
+    return { status: 200, body: withEdits(item, index, edits) };
   } catch (error) {
     if (error instanceof StorageError) return { status: 502, body: { error: "storage_error" } };
     throw error;
@@ -351,7 +442,9 @@ async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fet
   if (body.task !== item.task) return { status: 409, body: { error: "item_changed" } };
   const status = savedStatus(statusFile.items, index, item.task);
   if (status === "done") return { status: 409, body: { error: "done" } };
-  const owner = String(item.owner ?? "").trim();
+  // Someone may have changed the owner or due date; the email goes to the current owner.
+  const current = withEdits(item, index, statusFile.edits);
+  const owner = String(current.owner ?? "").trim();
   if (NO_OWNER.test(owner)) return { status: 422, body: { error: "no_owner" } };
 
   const detailsUrl = settings.VIEW_DETAILS_BASE_URL
@@ -360,9 +453,9 @@ async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fet
   const { subject, html } = buildFollowUpEmail({
     owner,
     task: item.task,
-    due: item.due,
+    due: current.due,
     status,
-    daysOverdue: overdueDays(item.due, status, saved.date, now()),
+    daysOverdue: overdueDays(current.due, status, saved.date, now()),
     meetingTitle: saved.title,
     meetingDate: saved.date,
     detailsUrl,
@@ -385,9 +478,9 @@ async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fet
   const sentAt = now().toISOString();
   let recorded = false;
   try {
-    recorded = (await updateStatusFile(id, settings, fetchImpl, ({ items, followUps }) => ({
-      items,
-      followUps: upsert(followUps, { index, task: item.task, sentAt }),
+    recorded = (await updateStatusFile(id, settings, fetchImpl, (doc) => ({
+      ...doc,
+      followUps: upsert(doc.followUps, { index, task: item.task, sentAt }),
     }))) === "saved";
   } catch (error) {
     if (!(error instanceof StorageError)) throw error;
@@ -396,6 +489,6 @@ async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fet
 }
 
 module.exports = {
-  isValidLink, parseSummary, parseTranscript, getMeeting, setActionItemStatus, sendFollowUp,
-  buildFollowUpEmail, isOverdue, overdueDays, STATUS_IDS,
+  isValidLink, parseSummary, parseTranscript, getMeeting, setActionItemStatus, setActionItemDetails,
+  sendFollowUp, buildFollowUpEmail, isOverdue, overdueDays, STATUS_IDS,
 };

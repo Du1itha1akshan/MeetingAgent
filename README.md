@@ -52,6 +52,17 @@ shows as Open. An entry applies only while both its row number and task text
 still match the meeting. Anyone with a meeting's link can change its statuses,
 and who changed them isn't recorded.
 
+**Editing owners and due dates.** Clicking an owner opens a list of everyone
+who owns a task or speaks in the meeting, plus Unassigned; clicking a due date
+opens a date picker with a "No date" option. Changes are
+saved by `PUT /api/meetings/{id}/action-items/{index}/details` in the status
+file's `edits` list, on top of Claude's values (only fields that differ are
+stored; Reset removes them). Edited fields show "Edited", with the original on
+hover. Everything else uses the edited values, including sorting, filters,
+Overdue, the exported PDF and follow-up emails. Edited due dates are saved in
+Claude's form ("Thu 5 Nov"). The task text itself isn't editable, because
+statuses, follow-ups and edits are matched by it.
+
 **Follow-up emails.** Clicking Follow up on a task (disabled for Done tasks and
 tasks with no owner) calls `POST /api/meetings/{id}/action-items/{index}/follow-up`.
 The page only says which task; the API builds the subject and body itself (task,
@@ -125,10 +136,11 @@ containers and Logic App, so follow-ups sent from it are real emails.
 ```
 api/
   src/meeting.js             checks the link, reads the saved meeting, splits Claude's summary,
-                             reads and saves action item statuses, sends follow-ups
+                             reads and saves action item statuses and edits, sends follow-ups
   src/functions/meetings.js  GET  /api/meetings/{id}
                              PUT  /api/meetings/{id}/action-items/{index}/status
                              POST /api/meetings/{id}/action-items/{index}/follow-up
+                             PUT  /api/meetings/{id}/action-items/{index}/details
 infra/
   staticwebapp.bicep         the Static Web App, both containers and site settings
 scripts/
