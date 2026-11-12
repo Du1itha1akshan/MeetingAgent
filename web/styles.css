@@ -84,7 +84,9 @@ h1, h2, h3, p { margin: 0; }
 .icon-btn-sm .icon { width: 18px; height: 18px; }
 
 /* Loading and error messages, shown instead of the page. */
-.notice { max-width: 640px; margin: 80px auto; padding: 0 16px; color: var(--text-2); font-size: 16px; text-align: center; }
+/* The message (and the Try again button under it, when shown) in the middle of the page. */
+.notice-box { display: flex; flex-direction: column; align-items: center; gap: 20px; max-width: 640px; margin: 80px auto; padding: 0 16px; }
+.notice { color: var(--text-2); font-size: 16px; text-align: center; }
 
 /* ---- Avatars: one colour per speaker ---- */
 .avatar {
@@ -151,6 +153,11 @@ h1 { font-size: 30px; line-height: 1.25; font-weight: 600; letter-spacing: -0.01
 .btn .icon { width: 17px; height: 17px; }
 .btn-outline { background: var(--surface); border-color: var(--border-strong); }
 .btn-outline:hover { background: #f9fafb; }
+/* "Connect GitHub" is disabled until the integration exists: greyed out like a disabled Follow up
+   button. The button ignores the mouse, so hovering reaches the wrapper, which shows the
+   "not allowed" cursor and the "Coming soon" tooltip. */
+.github-wrap { display: inline-flex; cursor: not-allowed; }
+.github-btn:disabled { border-color: var(--border); background: #f9fafb; color: #9ca3af; pointer-events: none; }
 
 /* ---- Layout and cards ---- */
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 26px; align-items: start; }
@@ -587,7 +594,12 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
 .search:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 .search .icon { width: 16px; height: 16px; }
 .search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; }
-.transcript-list { flex: 1; margin: 0; padding: 4px 24px; overflow-y: auto; list-style: none; }
+/* The box that scrolls (see index.html). The focus ring is drawn inside the edge, because the
+   card cuts off anything outside it. It shows for keyboard focus only, not after a mouse click. */
+.transcript-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.transcript-scroll:focus { outline: 0; }
+.transcript-scroll:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.transcript-list { margin: 0; padding: 4px 24px; list-style: none; }
 .line { display: grid; grid-template-columns: 28px 1fr; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--border); }
 .line:last-child { border-bottom: 0; }
 .line .avatar { width: 28px; height: 28px; }

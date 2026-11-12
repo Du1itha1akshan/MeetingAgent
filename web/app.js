@@ -15,6 +15,7 @@
   let meeting;
   let meetingLink; // { id, hash } from the page address
   let speakers = [];
+  let unnamedLabels = new Set(); // "Unnamed Speaker" labels given to speakers without a name
   let activeFilter = "all";
   let sort = { by: null, dir: "asc" }; // by: null (default order), "owner" or "due"
   let searchText = "";  // the action item search, lower-cased
@@ -46,6 +47,12 @@
   const initials = (name) => name.split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase();
 
   function avatar(name) {
+    // A speaker without a name gets a grey "?" (their label's initials would mean nothing).
+    if (unnamedLabels.has(name)) {
+      const node = el("span", "avatar tone-none", "?");
+      node.title = name;
+      return node;
+    }
     // Each speaker keeps the same colour everywhere on the page; anyone else is grey.
     const index = speakers.indexOf(name);
     const node = el("span", `avatar ${index < 0 ? "tone-none" : `tone-${index % 5}`}`, initials(name));
@@ -431,15 +438,16 @@
   }
 
   // The order used by the table and the exported PDF. Done items always go last. Without a sort
-  // chosen, overdue items come first; otherwise the chosen sort decides. Ties keep the order
-  // Claude listed them in. `index` stays the item's position in the meeting, which saving uses.
+  // chosen, overdue items come first, the most overdue at the top (e.g. 9 days, then 5, then 1);
+  // otherwise the chosen sort decides. Ties keep the order Claude listed them in. `index` stays
+  // the item's position in the meeting, which saving uses.
   function inDisplayOrder(items) {
     const done = (item) => (item.status === "done" ? 1 : 0);
-    const rank = (item) => (isOverdue(item) ? 0 : 1);
+    const lateness = (item) => (isOverdue(item) ? overdueDays(item) : -1); // not overdue: after all overdue
     return items
       .map((item, index) => ({ item, index }))
       .sort((a, b) => done(a.item) - done(b.item)
-        || (sort.by ? compareBy(a.item, b.item, sort.by, sort.dir) : rank(a.item) - rank(b.item))
+        || (sort.by ? compareBy(a.item, b.item, sort.by, sort.dir) : lateness(b.item) - lateness(a.item))
         || a.index - b.index);
   }
 
@@ -601,8 +609,22 @@
   // Labels that stand in for a person rather than name one, e.g. Fireflies' "@1" for a speaker it
   // couldn't identify, "Speaker 2", "Unknown speaker" or "Guest". Real names have at least two
   // letters (in any language) and don't start with "@".
-  const PLACEHOLDER_NAME = /^(speaker|participant|attendee|guest|unknown|user)(\s+(speaker|user|participant))?\s*#?\s*\d*$/i;
+  // "Unnamed Speaker" (the page's own label, see below) counts as a placeholder too.
+  const PLACEHOLDER_NAME = /^(speaker|participant|attendee|guest|unknown|unnamed|user)(\s+(speaker|user|participant))?\s*#?\s*\d*$/i;
   const isRealName = (name) => !name.startsWith("@") && (name.match(/\p{L}/gu)?.length ?? 0) >= 2 && !PLACEHOLDER_NAME.test(name);
+
+  // In the transcript, a speaker without a real name ("@1", "Speaker 2", "Guest"…) is shown as
+  // "Unnamed Speaker", or "Unnamed Speaker 1", "Unnamed Speaker 2"… when a meeting has more than
+  // one, numbered in the order they first speak. Done once when the meeting loads, so the
+  // transcript, its search, the downloads, the PDF and the speaker list all use the same label.
+  function nameUnnamedSpeakers(lines) {
+    const unnamed = [...new Set(lines.map((line) => line.speaker))].filter((name) => !isRealName(String(name ?? "").trim()));
+    const labels = new Map(unnamed.map((name, i) => [name, unnamed.length === 1 ? "Unnamed Speaker" : `Unnamed Speaker ${i + 1}`]));
+    for (const line of lines) {
+      if (labels.has(line.speaker)) line.speaker = labels.get(line.speaker);
+    }
+    unnamedLabels = new Set(labels.values());
+  }
 
   // Everyone with a real name who owns a task or speaks in the meeting, A–Z, then "Unassigned".
   function ownerChoices() {
@@ -1491,13 +1513,29 @@
 
   enhanceSelect($("owner-filter"));
   enhanceSelect($("sort-select"));
-  // The "Connect GitHub" button in the top bar doesn't do anything yet.
+  // The "Connect GitHub" button in the top bar is disabled (in index.html) until the integration exists.
 
   // ---- Loading ----
+  // Shows why the meeting couldn't be shown. The Try again button appears only when trying again
+  // might help: no connection, a server error, or a reply that wasn't meeting data. A missing or
+  // wrong link won't fix itself, so those get no button.
+  function showLoadError(message, canRetry) {
+    $("notice").textContent = message;
+    $("retry-button").hidden = !canRetry;
+  }
+
+  // Try again loads the meeting again in place. If that fails too, focus goes back to the button.
+  $("retry-button").addEventListener("click", async () => {
+    $("retry-button").hidden = true;
+    $("notice").textContent = "Loading meeting…";
+    await load();
+    if (!$("retry-button").hidden) $("retry-button").focus();
+  });
+
   async function load() {
     const link = location.pathname.match(LINK);
     if (!link) {
-      $("notice").textContent = "This link is incomplete. Open the meeting from the View Details button in its summary email.";
+      showLoadError("This link is incomplete. Open the meeting from the View Details button in its summary email.", false);
       return;
     }
 
@@ -1506,25 +1544,33 @@
       // The hash goes in a header rather than the address, so it isn't written to request logs.
       response = await fetch(`/api/meetings/${link[1]}`, { headers: { "X-Meeting-Link": link[2] } });
     } catch {
-      $("notice").textContent = "The meeting couldn't be loaded. Check your connection and try again.";
+      showLoadError("The meeting couldn't be loaded. Check your connection and try again.", true);
       return;
     }
     if (response.status === 404) {
-      $("notice").textContent = "This meeting link isn't valid, or the meeting is no longer available.";
+      showLoadError("This meeting link isn't valid, or the meeting is no longer available.", false);
       return;
     }
     if (!response.ok) {
-      $("notice").textContent = "The meeting couldn't be loaded. Try again in a minute.";
+      showLoadError("The meeting couldn't be loaded. Try again in a minute.", true);
       return;
     }
-
-    meeting = await response.json();
+    try {
+      meeting = await response.json();
+      if (!Array.isArray(meeting?.actionItems) || !Array.isArray(meeting?.transcript)) throw new Error("not meeting data");
+    } catch {
+      // For example an error page from a proxy instead of the meeting.
+      meeting = null;
+      showLoadError("The meeting couldn't be loaded. Try again in a minute.", true);
+      return;
+    }
     meetingLink = { id: link[1], hash: link[2] };
     meeting.actionItems.forEach((item) => {
       // The API sends each item's saved status (open if nobody has changed it).
       if (!STATUSES.some((s) => s.id === item.status)) item.status = "open";
       item.savedStatus = item.status;
     });
+    nameUnnamedSpeakers(meeting.transcript);
     speakers = [...new Set(meeting.transcript.map((line) => line.speaker))];
 
     renderHeader();
@@ -1546,7 +1592,7 @@
     $("download-text").addEventListener("click", downloadTranscriptText);
     $("download-pdf").addEventListener("click", downloadTranscriptPdf);
     $("export-button").addEventListener("click", exportMeetingPdf);
-    $("notice").hidden = true;
+    $("notice-box").hidden = true;
     $("page").hidden = false;
   }
 

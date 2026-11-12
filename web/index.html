@@ -39,13 +39,21 @@
         <span id="crumb-current"></span>
       </nav>
       <div class="topbar-actions">
-        <!-- Doesn't do anything yet. -->
-        <button class="btn btn-outline github-btn" type="button" id="connect-github" aria-label="Connect GitHub"><svg class="icon icon-filled"><use href="#i-github"/></svg><span class="btn-label">Connect GitHub</span></button>
+        <!-- Disabled until the GitHub integration exists. The "Coming soon" tooltip is on the
+             wrapper, because some browsers show no tooltip on a disabled button. -->
+        <span class="github-wrap" title="Coming soon">
+          <button class="btn btn-outline github-btn" type="button" id="connect-github" aria-label="Connect GitHub (coming soon)" disabled><svg class="icon icon-filled"><use href="#i-github"/></svg><span class="btn-label">Connect GitHub</span></button>
+        </span>
       </div>
     </div>
   </header>
 
-  <p class="notice" id="notice" role="status">Loading meeting…</p>
+  <!-- "Loading meeting…", or why the meeting couldn't be shown. The Try again button appears only
+       when trying again might help (no connection, a server error). -->
+  <div class="notice-box" id="notice-box">
+    <p class="notice" id="notice" role="status">Loading meeting…</p>
+    <button class="btn btn-outline" type="button" id="retry-button" hidden>Try again</button>
+  </div>
 
   <main class="page" id="page" hidden>
     <div class="page-head">
@@ -153,7 +161,12 @@
             <input type="search" id="transcript-search" placeholder="Search transcript" aria-label="Search transcript">
           </label>
         </div>
-        <ol class="transcript-list" id="transcript-list"></ol>
+        <!-- The transcript scrolls inside this box. It can take keyboard focus (Tab), so the arrow
+             keys, Page Up/Down, Home, End and Space scroll it. Screen readers call it "Transcript"
+             (from the heading), and the lines inside are still announced as a list. -->
+        <div class="transcript-scroll" id="transcript-scroll" tabindex="0" role="region" aria-labelledby="transcript-heading">
+          <ol class="transcript-list" id="transcript-list"></ol>
+        </div>
       </aside>
     </div>
   </main>
