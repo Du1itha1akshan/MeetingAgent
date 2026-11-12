@@ -88,12 +88,14 @@ function parseTranscript(markdown) {
 
 // ---- Action item statuses, follow-ups and edits ----
 // Saved in a separate container ("meeting-status"), one <meeting_id>.json per meeting:
-//   { "items":     [ { "index": 2, "task": "…", "status": "done" } ],
-//     "followUps": [ { "index": 2, "task": "…", "sentAt": "2026-11-10T08:20:21.000Z" } ],
+//   { "items":     [ { "index": 2, "task": "…", "status": "blocked", "reason": "…" } ],
+//     "followUps": [ { "index": 2, "task": "…", "sentAt": "2026-11-10T08:20:21.000Z", "owner": "…" } ],
 //     "edits":     [ { "index": 2, "task": "…", "owner": "…", "due": "Thu 5 Nov", "editedAt": "…" } ],
 //     "updatedAt": "…" }
-// "items" holds only the items whose status someone has changed, "followUps" the time of the
-// last follow-up email sent for an item, and "edits" an owner or due date someone changed (only
+// "items" holds only the items whose status someone has changed (a Blocked one can have the
+// "reason" it's blocked), "followUps" the time of the
+// last follow-up email sent for an item and who it went to (records from before 12 Nov 2026
+// have no "owner"), and "edits" an owner or due date someone changed (only
 // the fields that differ from Claude's). Items have no ID, so an entry applies only when both
 // its row number and its task text still match. The meeting files themselves are never written.
 const STATUS_IDS = ["open", "in_progress", "qa", "blocked", "done"];
@@ -111,9 +113,23 @@ function savedStatus(entries, index, task) {
   return STATUS_IDS.includes(entry?.status) ? entry.status : "open";
 }
 
+// Why a Blocked task is blocked, or null.
+function blockedReason(entries, index, task) {
+  const entry = entryFor(entries, index, task);
+  return entry?.status === "blocked" && typeof entry.reason === "string" && entry.reason.trim() ? entry.reason.trim() : null;
+}
+
 function lastFollowUp(followUps, index, task) {
   const sentAt = entryFor(followUps, index, task)?.sentAt;
   return typeof sentAt === "string" && !Number.isNaN(Date.parse(sentAt)) ? sentAt : null;
+}
+
+// Who the last follow-up went to, or null when there's none or the record is from before the
+// recipient was saved.
+function lastFollowUpTo(followUps, index, task) {
+  if (!lastFollowUp(followUps, index, task)) return null;
+  const owner = entryFor(followUps, index, task)?.owner;
+  return typeof owner === "string" && owner.trim() ? owner.trim() : null;
 }
 
 // The owner and due date to show: someone's edit if there is one, otherwise Claude's.
@@ -153,11 +169,14 @@ async function readStatusFile(id, settings, fetchImpl) {
 // the whole new content), and writes it back only if nobody else saved in between (If-Match
 // with the file's ETag, or If-None-Match: * when creating it). Storage answers 412 when someone
 // did, and then this starts again from a fresh read. Every part is always written, so saving one
-// kind of change keeps the others. Returns "saved", "busy" (gave up after 3 tries) or "storage_error".
+// kind of change keeps the others. change may return null to write nothing (for example when the
+// fresh read shows the change isn't allowed). Returns "saved", "unchanged" (change returned
+// null), "busy" (gave up after 3 tries) or "storage_error".
 async function updateStatusFile(id, settings, fetchImpl, change) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const { items, followUps, edits, etag } = await readStatusFile(id, settings, fetchImpl);
     const next = change({ items, followUps, edits });
+    if (next === null) return "unchanged";
     const response = await fetchImpl(statusFileUrl(id, settings), {
       method: "PUT",
       headers: {
@@ -218,21 +237,30 @@ async function getMeeting(id, hash, settings, fetchImpl = fetch) {
         ...item,
         ...withEdits(item, index, statuses.edits),
         status: savedStatus(statuses.items, index, item.task),
+        blockedReason: blockedReason(statuses.items, index, item.task),
         lastFollowUpAt: lastFollowUp(statuses.followUps, index, item.task),
+        lastFollowUpTo: lastFollowUpTo(statuses.followUps, index, item.task),
       })),
       transcript: parseTranscript(saved.transcriptMarkdown),
     },
   };
 }
 
-// Handles PUT /api/meetings/{id}/action-items/{index}/status with body { status, task }.
+// Why a task is blocked: 1–200 characters on one line.
+const isValidReason = (reason) => typeof reason === "string" && reason.trim().length > 0 && reason.trim().length <= 200 && !/[\u0000-\u001f]/.test(reason);
+
+// Handles PUT /api/meetings/{id}/action-items/{index}/status with body { status, task, reason? }.
 // `task` is the item's text as the page shows it; if the meeting has changed since the
-// page loaded and that row now holds a different task, nothing is saved (409).
+// page loaded and that row now holds a different task, nothing is saved (409). A Blocked task
+// can carry the reason it's blocked: sending Blocked with a reason saves it, without one keeps
+// the reason already saved, and null removes it. Any other status drops the reason.
 async function setActionItemStatus(id, hash, indexText, body, settings, fetchImpl = fetch) {
   if (!hasMeetingSettings(settings) || !hasStatusSettings(settings)) return { status: 500, body: { error: "not_configured" } };
   if (!isValidLink(id, hash, settings.MEETING_LINK_SECRET)) return { status: 404, body: { error: "not_found" } };
   if (!/^\d{1,4}$/.test(indexText ?? "")) return { status: 400, body: { error: "invalid_index" } };
   if (!STATUS_IDS.includes(body?.status)) return { status: 400, body: { error: "invalid_status" } };
+  const hasReason = body.status === "blocked" && "reason" in body;
+  if (hasReason && body.reason !== null && !isValidReason(body.reason)) return { status: 400, body: { error: "invalid_reason" } };
   const index = Number(indexText);
 
   try {
@@ -242,11 +270,18 @@ async function setActionItemStatus(id, hash, indexText, body, settings, fetchImp
     if (!item) return { status: 404, body: { error: "not_found" } };
     if (body.task !== item.task) return { status: 409, body: { error: "item_changed" } };
 
-    const result = await updateStatusFile(id, settings, fetchImpl, (doc) => ({
-      ...doc,
-      items: upsert(doc.items, { index, task: item.task, status: body.status }),
-    }));
-    if (result === "saved") return { status: 200, body: { status: body.status } };
+    let reason = null;
+    const result = await updateStatusFile(id, settings, fetchImpl, (doc) => {
+      const entry = { index, task: item.task, status: body.status };
+      if (body.status === "blocked") {
+        const current = entryFor(doc.items, index, item.task);
+        const kept = current?.status === "blocked" && isValidReason(current.reason) ? current.reason : null;
+        reason = hasReason ? (body.reason === null ? null : body.reason.trim()) : kept;
+        if (reason) entry.reason = reason;
+      }
+      return { ...doc, items: upsert(doc.items, entry) };
+    });
+    if (result === "saved") return { status: 200, body: { status: body.status, reason } };
     if (result === "busy") return { status: 409, body: { error: "busy" } };
     return { status: 502, body: { error: "storage_error" } };
   } catch (error) {
@@ -288,7 +323,8 @@ const isValidOwner = (owner) => typeof owner === "string" && owner.trim().length
 
 // Handles PUT /api/meetings/{id}/action-items/{index}/details with body { task, owner?, due? }.
 // A field that's left out stays as it is; null puts back Claude's value. Only fields that differ
-// from Claude's are stored. Answers with the owner and due date to show now.
+// from Claude's are stored. Answers with the owner and due date to show now. A Done task's owner
+// and due date can't be changed (409 done), checked against the same read the save uses.
 async function setActionItemDetails(id, hash, indexText, body, settings, fetchImpl = fetch, now = () => new Date()) {
   if (!hasMeetingSettings(settings) || !hasStatusSettings(settings)) return { status: 500, body: { error: "not_configured" } };
   if (!isValidLink(id, hash, settings.MEETING_LINK_SECRET)) return { status: 404, body: { error: "not_found" } };
@@ -312,6 +348,7 @@ async function setActionItemDetails(id, hash, indexText, body, settings, fetchIm
     const editedAt = now().toISOString();
     let edits = [];
     const result = await updateStatusFile(id, settings, fetchImpl, (doc) => {
+      if (savedStatus(doc.items, index, item.task) === "done") return null;
       const current = entryFor(doc.edits, index, item.task) ?? {};
       const owner = hasOwner ? (body.owner === null ? undefined : body.owner.trim()) : current.owner;
       const due = hasDue ? (body.due === null ? undefined : body.due) : current.due;
@@ -322,6 +359,7 @@ async function setActionItemDetails(id, hash, indexText, body, settings, fetchIm
       if ("owner" in entry || "due" in entry) edits = upsert(edits, { ...entry, editedAt });
       return { ...doc, edits };
     });
+    if (result === "unchanged") return { status: 409, body: { error: "done" } };
     if (result === "busy") return { status: 409, body: { error: "busy" } };
     if (result !== "saved") return { status: 502, body: { error: "storage_error" } };
     return { status: 200, body: withEdits(item, index, edits) };
@@ -349,6 +387,9 @@ function localDate(date) {
     .formatToParts(date).map((p) => [p.type, Number(p.value)]));
   return { year: parts.year, month: parts.month - 1, day: parts.day };
 }
+
+// The Sri Lanka calendar day of a moment, e.g. "2026-11-12", for comparing two moments by day.
+const dayKey = (date) => { const d = localDate(date); return `${d.year}-${d.month + 1}-${d.day}`; };
 
 const validDate = (value) => {
   const date = value ? new Date(value) : null;
@@ -418,8 +459,10 @@ const linkHash = (id, secret) => crypto.createHash("sha256").update(id + secret,
 
 // Handles POST /api/meetings/{id}/action-items/{index}/follow-up with body { task }.
 // The page only says which item; the recipient, subject and body are all decided here, so
-// a visitor can't change who is emailed or what the email says. The time is recorded, and
-// shown on the page as "Last follow-up", only when the Logic App confirms the email was sent.
+// a visitor can't change who is emailed or what the email says. The time and recipient are
+// recorded, and shown on the page as "Last follow-up", only when the Logic App confirms the
+// email was sent. Each task can be followed up once a day (Sri Lanka time) per owner: a second
+// one that day gets 429 already_followed_up_today, without calling the Logic App.
 async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fetch, now = () => new Date()) {
   if (!hasMeetingSettings(settings) || !hasStatusSettings(settings) || !hasFollowUpSettings(settings)) {
     return { status: 500, body: { error: "not_configured" } };
@@ -446,6 +489,17 @@ async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fet
   const current = withEdits(item, index, statusFile.edits);
   const owner = String(current.owner ?? "").trim();
   if (NO_OWNER.test(owner)) return { status: 422, body: { error: "no_owner" } };
+
+  // Once a day per task, so an owner isn't emailed about the same task again and again. If the
+  // owner has changed since, the new owner can be followed up straight away. Records from
+  // before the recipient was saved count as the current owner.
+  const last = entryFor(statusFile.followUps, index, item.task);
+  const lastSentAt = validDate(last?.sentAt);
+  const lastOwner = typeof last?.owner === "string" ? last.owner.trim() : null;
+  const sameOwner = lastOwner === null || lastOwner.toLowerCase() === owner.toLowerCase();
+  if (lastSentAt && sameOwner && dayKey(lastSentAt) === dayKey(now())) {
+    return { status: 429, body: { error: "already_followed_up_today", sentAt: lastSentAt.toISOString(), owner: lastOwner ?? owner } };
+  }
 
   const detailsUrl = settings.VIEW_DETAILS_BASE_URL
     ? `${settings.VIEW_DETAILS_BASE_URL}${id}/${linkHash(id, settings.MEETING_LINK_SECRET)}`
@@ -474,18 +528,19 @@ async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fet
   if (response.status === 404) return { status: 404, body: { error: "no_email" } };
   if (response.status !== 200) return { status: 502, body: { error: "send_failed" } };
 
-  // Sent. Record when, so the page can show it; if recording fails the email still went.
+  // Sent. Record when and to whom, so the page can show it and the daily limit applies; if
+  // recording fails the email still went.
   const sentAt = now().toISOString();
   let recorded = false;
   try {
     recorded = (await updateStatusFile(id, settings, fetchImpl, (doc) => ({
       ...doc,
-      followUps: upsert(doc.followUps, { index, task: item.task, sentAt }),
+      followUps: upsert(doc.followUps, { index, task: item.task, sentAt, owner }),
     }))) === "saved";
   } catch (error) {
     if (!(error instanceof StorageError)) throw error;
   }
-  return { status: 200, body: { sentAt, recorded } };
+  return { status: 200, body: { sentAt, recorded, owner } };
 }
 
 module.exports = {

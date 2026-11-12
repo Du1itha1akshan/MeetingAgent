@@ -244,7 +244,8 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
 .dd-option.dd-separated::after { content: ""; position: absolute; right: 4px; bottom: -5px; left: 4px; height: 1px; background: var(--border); }
 
 /* ---- Summary ---- */
-.summary-text { max-width: 660px; margin-top: 18px; color: #1f2937; line-height: 1.55; }
+/* The summary uses the card's full width, like the key points under it. */
+.summary-text { margin-top: 18px; color: #1f2937; line-height: 1.55; }
 .summary-text p + p { margin-top: 12px; }
 .eyebrow { margin: 24px 0 10px; color: var(--text-2); font-size: 12.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .key-points { display: grid; gap: 7px; margin: 0; padding-left: 20px; color: #1f2937; }
@@ -304,7 +305,8 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
 /* A darker orange than the dot, so the white text stays readable. */
 .overdue-count { background: #c2580a; }
 
-.table-wrap { overflow-x: auto; }
+/* No sideways scrolling here: the layout breakpoints below keep the table (at least 760 px) from
+   ever being wider than its card, and a scrolling wrapper would stop the headings from sticking. */
 .items { width: 100%; min-width: 760px; border-collapse: collapse; table-layout: fixed; }
 .c-task { width: 25%; }
 .c-owner { width: 22%; }
@@ -312,9 +314,16 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
 .c-due { width: 18%; }
 .c-status { width: 21%; }
 .c-follow-up { width: 14%; }
+/* The column headings stay at the top of the window while the list scrolls under them. Their
+   line is a shadow, because the borders of sticky cells in a collapsed table don't move with
+   them; once they're stuck, a soft shadow shows the rows passing underneath. */
 .items th {
+  position: sticky;
+  top: 0;
+  z-index: 6;
   padding: 12px 12px 10px 0;
-  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 var(--border);
   color: var(--text-2);
   font-size: 12px;
   font-weight: 600;
@@ -322,6 +331,15 @@ h2 { font-size: 19px; line-height: 1.35; font-weight: 600; }
   text-align: left;
   text-transform: uppercase;
 }
+.items.head-stuck th { box-shadow: inset 0 -1px 0 var(--border), 0 10px 14px -12px rgba(17, 24, 39, 0.35); }
+
+/* Done tasks are folded away at the end of the list behind "Show 3 done tasks". */
+.items .done-toggle-cell { padding: 0; }
+.done-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 14px 0; border: 0; background: none; color: var(--text-2); font: inherit; font-size: 14px; font-weight: 600; text-align: left; cursor: pointer; }
+.done-toggle:hover { color: var(--blue); }
+.done-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 6px; }
+.done-toggle .icon { width: 16px; height: 16px; transform: rotate(-90deg); transition: transform 150ms; }
+.done-toggle[aria-expanded="true"] .icon { transform: none; }
 /* Owner and Due headers sort the table: ↕ when not sorted, ↑ or ↓ (in blue) when sorted. */
 .sort-btn {
   display: inline-flex;
@@ -425,7 +443,7 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
 .items td { padding: 16px 12px 16px 0; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: 14.5px; }
 .task-title { font-weight: 500; line-height: 1.45; }
 .row-done .task-title { color: var(--text-3); text-decoration: line-through; }
-.row-done .due { color: var(--text-3); }
+.row-done .due, .row-done .owner-name { color: var(--text-3); }
 .owner { display: flex; align-items: center; gap: 8px; }
 
 /* Editable owner and due date: the name or date itself is a button (grey on hover, like the
@@ -451,6 +469,9 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
 .cell-btn:hover, .cell-btn.open { background: #eef0f3; }
 .cell-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; }
 .due-view.cell-btn { align-items: flex-start; }
+/* A Done task's owner and due date: plain text in the same place, not clickable. */
+.cell-locked { display: flex; min-width: 0; cursor: default; }
+.due-view.cell-locked { align-items: flex-start; }
 /* The name or date, with "Edited" under it. */
 .cell-text { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; }
 /* Names and dates wrap between words; a word is split only if it can't fit on a line by itself. */
@@ -561,13 +582,80 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
 .follow-up:hover:not(:disabled) { background: var(--blue-soft); }
 .follow-up .icon { width: 14px; height: 14px; }
 .follow-up:disabled { border-color: var(--border); background: #f9fafb; color: #9ca3af; cursor: not-allowed; }
-/* Briefly green after a follow-up email was sent. */
-.follow-up-sent { border-color: #22a05a; color: #176c3d; }
 /* The button, then any error and "Last follow-up" under it. */
 .follow-up-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .last-follow-up { font-size: 12px; line-height: 1.35; color: var(--text-3); }
 .follow-up-error { font-size: 12px; line-height: 1.35; color: #b42318; }
 .no-items { padding: 28px 0; color: var(--text-3); text-align: center; }
+
+/* ---- Follow-up pop-ups ---- */
+/* An icon in a tinted circle: amber clock (not sent today) or green check (sent). */
+.popup-icon { display: inline-grid; place-items: center; flex: none; width: 56px; height: 56px; border-radius: 50%; }
+.popup-icon .icon { width: 28px; height: 28px; stroke-width: 2; }
+.popup-icon-wait { background: #fef3c7; color: #b45309; box-shadow: 0 0 0 8px #fffbeb; }
+.popup-icon-done { background: #dcfce7; color: #15803d; }
+
+/* The dialog: a centred card over the dimmed, slightly blurred page. */
+.popup { width: min(420px, calc(100vw - 32px)); max-width: none; padding: 0; border: 0; border-radius: 18px; background: var(--surface); color: var(--text); box-shadow: 0 24px 64px rgba(17, 24, 39, 0.28); }
+.popup::backdrop { background: rgba(17, 24, 39, 0.45); backdrop-filter: blur(3px); }
+.popup[open] { animation: popup-in 180ms ease-out; }
+.popup[open]::backdrop { animation: popup-fade 180ms ease-out; }
+/* The content fills the card, so a click that lands on the dialog itself was on the backdrop. */
+.popup-body { display: flex; flex-direction: column; align-items: center; padding: 32px 28px 24px; text-align: center; }
+.popup-title { margin: 22px 0 8px; font-size: 20px; font-weight: 600; line-height: 1.3; }
+.popup-text { margin: 0; color: var(--text-2); font-size: 15px; line-height: 1.5; }
+.popup-task { width: 100%; margin: 16px 0 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: #f9fafb; font-size: 14px; font-weight: 500; line-height: 1.45; text-align: left; overflow-wrap: break-word; }
+.popup-note { margin: 14px 0 0; color: var(--text-3); font-size: 13px; line-height: 1.5; }
+.popup-ok { width: 100%; height: 44px; margin-top: 22px; border: 0; border-radius: 10px; background: var(--blue); color: #fff; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.popup-ok:hover { background: #2440b5; }
+.popup-ok:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+
+/* The "What's blocking this task?" dialog: same card, with a reason box and two buttons. */
+.popup-icon-blocked { background: #fdeceb; color: #b42318; box-shadow: 0 0 0 8px #fef6f5; }
+.popup-form .popup-task { margin-top: 10px; }
+.popup-label { align-self: stretch; margin: 18px 0 6px; color: var(--text-2); font-size: 13px; font-weight: 600; text-align: left; }
+.popup-input { align-self: stretch; height: 44px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 15px; }
+.popup-input:focus { outline: 0; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.popup-count { align-self: stretch; margin: 6px 0 0; color: var(--text-3); font-size: 12px; text-align: right; }
+.popup-buttons { display: flex; align-self: stretch; gap: 10px; margin-top: 18px; }
+.popup-buttons .popup-ok { flex: 1; margin-top: 0; }
+.popup-ok:disabled { background: #9aa8e6; cursor: not-allowed; }
+.popup-cancel { flex: 1; height: 44px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.popup-cancel:hover { background: #f9fafb; }
+.popup-cancel:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+
+/* Under a blocked task's name: why it's blocked (click to change it), or a link to add it. */
+.blocked-reason { display: block; max-width: calc(100% + 6px); margin: 4px 0 0 -6px; padding: 2px 6px; border: 0; border-radius: 6px; background: none; color: #b42318; font: inherit; font-size: 13px; line-height: 1.45; text-align: left; overflow-wrap: break-word; cursor: pointer; }
+.blocked-reason:hover { background: #fdeceb; }
+.blocked-reason:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.blocked-label { font-weight: 600; }
+.blocked-reason-missing { color: var(--blue); font-weight: 600; }
+.blocked-reason-missing:hover { background: var(--blue-soft); }
+
+/* The card that confirms a sent follow-up: slides up at the bottom right and closes by itself
+   after 5 seconds (the green bar shows the time left; it waits while the mouse is over it). */
+.toast { position: fixed; right: 24px; bottom: 24px; z-index: 50; display: flex; align-items: flex-start; gap: 14px; width: min(380px, calc(100vw - 32px)); padding: 16px 46px 18px 16px; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 18px 48px rgba(17, 24, 39, 0.18); animation: toast-in 220ms ease-out; }
+.toast .popup-icon { width: 40px; height: 40px; }
+.toast .popup-icon .icon { width: 22px; height: 22px; stroke-width: 2.4; }
+.toast-body { min-width: 0; padding-top: 1px; }
+.toast-title { margin: 0; font-size: 15px; font-weight: 600; }
+.toast-text { display: -webkit-box; margin: 3px 0 0; overflow: hidden; color: var(--text-2); font-size: 14px; line-height: 1.45; overflow-wrap: break-word; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.toast-close { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--text-3); cursor: pointer; }
+.toast-close:hover { background: #f3f4f6; color: var(--text); }
+.toast-close:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; }
+.toast-close .icon { width: 16px; height: 16px; }
+.toast-timer { position: absolute; bottom: 0; left: 0; width: 100%; height: 3px; background: #22a05a; transform-origin: left; animation: toast-timer 5s linear forwards; }
+.toast.paused .toast-timer { animation-play-state: paused; }
+@keyframes popup-in { from { opacity: 0; transform: translateY(8px) scale(0.96); } }
+@keyframes popup-fade { from { opacity: 0; } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(16px); } }
+@keyframes toast-timer { to { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .popup[open], .popup[open]::backdrop, .toast { animation: none; }
+  .toast-timer { display: none; }
+}
+/* Read by screen readers, not shown. */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* ---- Transcript ---- */
 .transcript {
@@ -610,14 +698,42 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
 mark { border-radius: 2px; background: #fff1a8; color: inherit; }
 .no-lines { padding: 24px 0; color: var(--text-3); font-size: 14px; text-align: center; }
 
-/* ---- Narrow screens ---- */
-@media (max-width: 1100px) {
+/* ---- Back to top ----
+   Desktop (two columns): the dock is the last thing in the left column and sticks to the bottom
+   of the window; the round button sits on the column's right edge, half over the card's padding
+   and half over the gap before the transcript, so it covers no text. It fades in once the page
+   is scrolled down (app.js), and moves up while the "Follow-up sent" card is showing. */
+.to-top-dock { position: sticky; bottom: 24px; z-index: 30; height: 0; margin-top: -24px; transition: bottom 200ms ease-out; }
+.to-top { position: absolute; right: -22px; bottom: 0; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--surface); color: var(--text-2); box-shadow: 0 6px 18px rgba(17, 24, 39, 0.14); cursor: pointer; opacity: 0; visibility: hidden; transform: translateY(8px); transition: opacity 200ms, transform 200ms, visibility 200ms; }
+.to-top.is-visible { opacity: 1; visibility: visible; transform: none; }
+.to-top:hover { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); }
+.to-top:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.to-top .icon { width: 20px; height: 20px; stroke-width: 2; }
+body.toast-open .to-top-dock { bottom: calc(24px + var(--toast-h, 96px) + 12px); }
+/* Back to action items moves focus to the "Action items" heading; no ring is needed there. */
+#actions-heading:focus { outline: none; }
+@media (prefers-reduced-motion: reduce) {
+  .to-top, .to-top-dock, .done-toggle .icon { transition: none; }
+}
+
+/* ---- Narrow screens ----
+   The action items table needs at least 760 px. With the 380 px transcript beside it that fits
+   from about 1300 px, so the transcript narrows to 320 px up to 1365 px (fits from 1240 px), and
+   below 1240 px the transcript moves under the action items. Below 900 px even one column is too
+   narrow, so each action item is shown as a block instead (see further down). */
+@media (max-width: 1365px) {
+  .layout { grid-template-columns: minmax(0, 1fr) 320px; }
+}
+@media (max-width: 1239px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
   .transcript { position: static; max-height: 640px; }
+  /* One column: Back to top sits in the window's bottom-right corner. */
+  .to-top-dock { position: fixed; right: 24px; bottom: 24px; height: auto; margin: 0; }
+  .to-top { position: static; }
 }
 
 /* Each action item becomes a block: the task, then labelled owner/due/status/follow-up rows. */
-@media (max-width: 860px) {
+@media (max-width: 900px) {
   .items { min-width: 0; table-layout: auto; }
   .items colgroup, .items thead { display: none; }
   .sort-mobile { display: flex; }
@@ -627,6 +743,7 @@ mark { border-radius: 2px; background: #fff1a8; color: inherit; }
   .due-stack { align-items: flex-end; }
   .items, .items tbody, .items tr, .items td { display: block; width: 100%; }
   .items tr { padding: 16px 0; border-bottom: 1px solid var(--border); }
+  .items tr.done-toggle-row { padding: 0; }
   .items td { padding: 0; border: 0; }
   .items td[data-label] { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
   .items td[data-label]::before {
@@ -663,4 +780,7 @@ mark { border-radius: 2px; background: #fff1a8; color: inherit; }
   .github-btn { width: 44px; padding: 0; justify-content: center; }
   .github-btn .btn-label { display: none; }
   .github-btn .icon { width: 20px; height: 20px; }
+  .toast { right: 16px; bottom: 16px; left: 16px; width: auto; }
+  .to-top-dock { right: 16px; bottom: 16px; }
+  body.toast-open .to-top-dock { bottom: calc(16px + var(--toast-h, 96px) + 12px); }
 }

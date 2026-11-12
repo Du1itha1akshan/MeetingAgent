@@ -17,6 +17,7 @@
   let speakers = [];
   let unnamedLabels = new Set(); // "Unnamed Speaker" labels given to speakers without a name
   let activeFilter = "all";
+  let showDone = false; // Done tasks are folded away at the end of the list until shown
   let sort = { by: null, dir: "asc" }; // by: null (default order), "owner" or "due"
   let searchText = "";  // the action item search, lower-cased
   let ownerFilter = ""; // an owner's name, "__none__" for no owner, or "" for everyone
@@ -212,14 +213,15 @@
 
   const matchesOwnerAndSearch = (item) =>
     (!ownerFilter || ownerKey(item) === ownerFilter)
-    && (!searchText || [item.task, item.owner, item.due].some((value) => String(value ?? "").toLowerCase().includes(searchText)));
+    && (!searchText || [item.task, item.owner, item.due, item.blockedReason].some((value) => String(value ?? "").toLowerCase().includes(searchText)));
 
   const matchesTools = (item) => matchesOwnerAndSearch(item) && dueMatches(item, dueFilter);
 
   const toolsActive = () => Boolean(searchText || ownerFilter || dueFilter);
 
-  // Every owner A–Z with how many tasks they have, and "Unassigned" last. Rebuilt after an owner
-  // is changed; if the chosen owner no longer has any tasks, the filter goes back to everyone.
+  // Every owner A–Z with how many tasks they have, and "Unassigned" always last (with "(0)" when
+  // every task has an owner). Rebuilt after an owner is changed; if the chosen person no longer
+  // has any tasks, the filter goes back to everyone. Unassigned stays chosen even at 0.
   function fillOwnerFilter() {
     const counts = new Map();
     for (const item of meeting.actionItems) counts.set(ownerKey(item), (counts.get(ownerKey(item)) ?? 0) + 1);
@@ -230,15 +232,13 @@
       option.value = name;
       return option;
     });
-    if (counts.has("__none__")) {
-      const option = el("option", "", `Unassigned (${counts.get("__none__")})`);
-      option.value = "__none__";
-      options.push(option);
-    }
+    const unassigned = el("option", "", `Unassigned (${counts.get("__none__") ?? 0})`);
+    unassigned.value = "__none__";
+    options.push(unassigned);
     const all = el("option", "", "All owners");
     all.value = "";
     $("owner-filter").replaceChildren(all, ...options);
-    if (ownerFilter && !counts.has(ownerFilter)) ownerFilter = "";
+    if (ownerFilter && ownerFilter !== "__none__" && !counts.has(ownerFilter)) ownerFilter = "";
     $("owner-filter").value = ownerFilter;
   }
 
@@ -479,6 +479,8 @@
   function renderActionItems() {
     // The table is about to be rebuilt, so close a dropdown list that's open inside it.
     if (document.querySelector("#items-body .dd-list:not([hidden])")) openDropdown?.();
+    // An owner or due date editor closes if its task has just been marked Done.
+    if (editing && meeting.actionItems[editing.index]?.status === "done") editing = null;
     const items = meeting.actionItems;
     $("actions-body").hidden = !items.length;
     if (!items.length) {
@@ -535,10 +537,24 @@
     }));
 
     const statusMatches = (item) => activeFilter === "all" || (activeFilter === "overdue" ? isOverdue(item) : item.status === activeFilter);
-    const rows = inDisplayOrder(items)
-      .filter(({ item }) => matchesTools(item) && statusMatches(item))
-      .map(({ item, index }) => itemRow(item, index));
-    const shown = rows.length;
+    const matching = inDisplayOrder(items).filter(({ item }) => matchesTools(item) && statusMatches(item));
+    // Done tasks (always last) are folded behind a "Show N done tasks" row, unless the Done
+    // filter is chosen. Folded rows are still built, just hidden, so they count as shown.
+    const doneCount = matching.filter(({ item }) => item.status === "done").length;
+    const fold = activeFilter !== "done" && doneCount > 0;
+    const rows = [];
+    let toggleAdded = false;
+    for (const { item, index } of matching) {
+      const folded = fold && item.status === "done";
+      if (folded && !toggleAdded) {
+        rows.push(doneToggleRow(doneCount));
+        toggleAdded = true;
+      }
+      const row = itemRow(item, index);
+      if (folded && !showDone) row.hidden = true;
+      rows.push(row);
+    }
+    const shown = matching.length;
     if (!rows.length) {
       const cell = el("td", "no-items", toolsActive() ? "No action items match these filters." : "No action items with this status.");
       cell.colSpan = 5;
@@ -556,6 +572,22 @@
     if (!$("due-calendar").hidden) renderCalendar();
   }
 
+  // The row above the Done tasks: "Show 3 done tasks" / "Hide 3 done tasks".
+  function doneToggleRow(count) {
+    const tasks = `${count} done ${count === 1 ? "task" : "tasks"}`;
+    const button = el("button", "done-toggle", icon("chevron"), showDone ? `Hide ${tasks}` : `Show ${tasks}`);
+    button.type = "button";
+    button.setAttribute("aria-expanded", String(showDone));
+    button.addEventListener("click", () => {
+      showDone = !showDone;
+      renderActionItems();
+      document.querySelector("#items-body .done-toggle")?.focus();
+    });
+    const cell = el("td", "done-toggle-cell", button);
+    cell.colSpan = 5;
+    return el("tr", "done-toggle-row", cell);
+  }
+
   function itemRow(item, index) {
     const select = el("select");
     select.dataset.index = index;
@@ -567,12 +599,32 @@
       select.append(option);
     }
     select.addEventListener("change", () => {
-      item.status = select.value;
-      renderActionItems();
-      // The table is rebuilt, so put focus back on this item's status.
-      focusSelect(document.querySelector(`#items-body select[data-index="${index}"]`));
-      saveStatus(item, index);
+      // Blocked needs a reason first: the status stays as it was until one is given.
+      if (select.value === "blocked" && item.status !== "blocked") {
+        select.value = item.status;
+        askBlockedReason(item, index, { returnTo: () => focusSelect(document.querySelector(`#items-body select[data-index="${index}"]`)) })
+          .then((reason) => { if (reason) setStatus("blocked", reason); });
+        return;
+      }
+      setStatus(select.value);
     });
+    const setStatus = (status, reason = null) => {
+      item.status = status;
+      item.blockedReason = status === "blocked" ? reason : null;
+      renderActionItems();
+      // The table is rebuilt, so put focus back on this item's status. A task just marked Done
+      // may now be folded away: then focus goes to "Show N done tasks", and screen readers hear
+      // where it went.
+      const again = document.querySelector(`#items-body select[data-index="${index}"]`);
+      if (again && !again.closest("tr").hidden) {
+        focusSelect(again);
+      } else {
+        document.querySelector("#items-body .done-toggle")?.focus();
+        $("announcer").textContent = "";
+        setTimeout(() => { $("announcer").textContent = "Marked Done. Done tasks are folded away at the end of the list."; }, 50);
+      }
+      saveStatus(item, index);
+    };
     // Each status in the list has its coloured dot, like the filters above the table.
     const statusDropdown = enhanceSelect(select, { chevron: false, optionContent: (option) => [el("span", `dot s-${option.value}`), option.textContent] });
 
@@ -582,14 +634,81 @@
 
     const statusStack = el("div", "status-stack", el("span", `status s-${item.status}`, statusDropdown, icon("chevron")), note);
 
+    const taskCell = el("td", "", el("div", "task-title", ...highlight(item.task, searchText)));
+    if (item.status === "blocked") taskCell.append(blockedReasonLine(item, index));
+
     return el("tr", item.status === "done" ? "row-done" : "",
-      el("td", "", el("div", "task-title", ...highlight(item.task, searchText))),
+      taskCell,
       ownerCell(item, index),
       dueCell(item, index),
       labelledCell("Status", "", statusStack),
       labelledCell("Follow-up", "", followUpCell(item, index)),
     );
   }
+
+  // ---- Why a task is blocked ----
+  // Under a blocked task's name: "Blocked: <reason>" in red (click it to change the reason), or,
+  // for a task blocked before reasons existed, a link to add one.
+  function blockedReasonLine(item, index) {
+    const reason = item.blockedReason;
+    const button = reason
+      ? el("button", "blocked-reason", el("span", "blocked-label", "Blocked: "), ...highlight(reason, searchText))
+      : el("button", "blocked-reason blocked-reason-missing", "Add the reason it's blocked");
+    button.type = "button";
+    button.dataset.blockedReason = index;
+    button.setAttribute("aria-label", reason ? `Blocked: ${reason}. Change the reason` : `Add the reason "${item.task}" is blocked`);
+    button.addEventListener("click", async () => {
+      const again = () => document.querySelector(`#items-body [data-blocked-reason="${index}"]`)?.focus();
+      const next = await askBlockedReason(item, index, { returnTo: again });
+      if (!next || next === item.blockedReason) return;
+      item.blockedReason = next;
+      renderActionItems();
+      again();
+      saveStatus(item, index);
+    });
+    return button;
+  }
+
+  // The "What's blocking this task?" dialog. Resolves with the reason (trimmed), or null when
+  // cancelled (Cancel, Escape or a click outside). A reason is required: the button stays
+  // disabled until something is typed. Focus goes back to returnTo() when it closes.
+  let blockedResolve = null, blockedReturn = null;
+  function askBlockedReason(item, index, { returnTo }) {
+    const alreadyBlocked = item.status === "blocked";
+    $("blocked-popup-title").textContent = alreadyBlocked ? "Why is this task blocked?" : "What's blocking this task?";
+    $("blocked-popup-task").textContent = item.task;
+    $("blocked-reason-input").value = item.blockedReason ?? "";
+    $("blocked-save").textContent = alreadyBlocked ? "Save reason" : "Mark as Blocked";
+    updateBlockedCount();
+    blockedReturn = returnTo;
+    $("blocked-popup").showModal();
+    $("blocked-reason-input").focus();
+    $("blocked-reason-input").select();
+    return new Promise((resolve) => { blockedResolve = resolve; });
+  }
+  function updateBlockedCount() {
+    const value = $("blocked-reason-input").value;
+    $("blocked-reason-count").textContent = `${value.length} / 200`;
+    $("blocked-save").disabled = !value.trim();
+  }
+  function closeBlocked(reason) {
+    const resolve = blockedResolve, returnTo = blockedReturn;
+    blockedResolve = blockedReturn = null;
+    if ($("blocked-popup").open) $("blocked-popup").close();
+    resolve?.(reason);
+    returnTo?.();
+  }
+  $("blocked-reason-input").addEventListener("input", updateBlockedCount);
+  $("blocked-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const reason = $("blocked-reason-input").value.trim();
+    if (reason) closeBlocked(reason);
+  });
+  $("blocked-cancel").addEventListener("click", () => closeBlocked(null));
+  $("blocked-popup").addEventListener("cancel", (event) => { event.preventDefault(); closeBlocked(null); }); // Escape
+  $("blocked-popup").addEventListener("click", (event) => {
+    if (event.target === $("blocked-popup")) closeBlocked(null); // the backdrop, not the card
+  });
 
   // ---- Editing the owner and due date ----
   // Clicking an owner or due date opens a small editor under it. Changes are saved in
@@ -604,6 +723,7 @@
     invalid_due: "That date couldn't be saved.",
     invalid_owner: "That owner couldn't be saved.",
     due_in_past: "Pick today or a later date.",
+    done: "This task is done, so it can't be changed.",
   };
 
   // Labels that stand in for a person rather than name one, e.g. Fireflies' "@1" for a speaker it
@@ -650,10 +770,16 @@
   // The owner or due date itself is the button: grey on hover like the Status dropdown, and a
   // click (or tap, or Enter) opens the editor. Nothing extra sits next to the text.
   function editTrigger(item, index, field, className, ...content) {
+    const label = field === "owner" ? "owner" : "due date";
+    // A Done task's owner and due date can't be changed: plain text, not a button.
+    if (item.status === "done") {
+      const text = el("span", `cell-locked ${className}`, ...content);
+      text.title = `This task is done, so its ${label} can't be changed`;
+      return text;
+    }
     const button = el("button", `cell-btn ${className}`, ...content);
     button.type = "button";
     button.dataset.edit = `${index}:${field}`;
-    const label = field === "owner" ? "owner" : "due date";
     const value = field === "owner" ? item.owner : item.due || "none";
     const edited = editedField(item, field) ? ` (edited; originally ${item.original[field] || "none"})` : "";
     button.setAttribute("aria-label", `${field === "owner" ? "Owner" : "Due date"}: ${value}${edited}. Change ${label} of "${item.task}"`);
@@ -691,7 +817,7 @@
     if (editedField(item, "owner")) text.append(editedBadge(item, "owner"));
     const view = editTrigger(item, index, "owner", "owner", avatar(item.owner), text);
     const cell = labelledCell("Owner", "editable", view, detailNote(item, index, "owner"));
-    if (editing?.index === index && editing.field === "owner") {
+    if (editing?.index === index && editing.field === "owner" && item.status !== "done") {
       const select = el("select", "cell-editor");
       select.setAttribute("aria-label", `Owner of "${item.task}"`);
       const current = NO_OWNER.test(String(item.owner ?? "").trim()) ? "Unassigned" : item.owner;
@@ -745,7 +871,7 @@
       stack.append(tag);
     }
     const cell = labelledCell("Due", "due editable", stack, detailNote(item, index, "due"));
-    if (editing?.index === index && editing.field === "due") {
+    if (editing?.index === index && editing.field === "due" && item.status !== "done") {
       const noDate = el("button", "link-btn", "No date");
       noDate.type = "button";
       noDate.addEventListener("click", () => saveDetails(item, index, "due", { due: "—" }));
@@ -856,6 +982,7 @@
   }
 
   function startEditing(index, field) {
+    if (meeting.actionItems[index]?.status === "done") return; // Done tasks can't be changed
     editing = { index, field };
     if (field === "due") openDueEditor(meeting.actionItems[index]);
     renderActionItems();
@@ -891,6 +1018,8 @@
       const result = await response.json().catch(() => ({}));
       if (response.ok) Object.assign(item, { owner: result.owner, due: result.due, original: result.original, editedAt: result.editedAt });
       else error = EDIT_ERRORS[result.error] ?? "Couldn't save. Try again.";
+      // Someone else marked it Done since this page loaded: show it as Done here too.
+      if (result.error === "done") item.status = item.savedStatus = "done";
     } catch {
       error = "Couldn't save. Check your connection and try again.";
     }
@@ -910,9 +1039,11 @@
 
   // ---- Follow-ups ----
   // The Follow up button asks the API to email the task's owner (through the follow-up Logic
-  // App). "Last follow-up" shows only after an email was actually sent, and stays hidden until
-  // then. Like status notes, the button's state lives on the item so it survives the table
-  // being rebuilt, and the cell is replaced in place so the rest of the table isn't disturbed.
+  // App). A pop-up card confirms a sent email; a pop-up dialog explains when the task was
+  // already followed up today (once a day per task). Other problems show under the button.
+  // "Last follow-up" shows only after an email was actually sent. Like status notes, the
+  // button's state lives on the item so it survives the table being rebuilt, and the cell is
+  // replaced in place so the rest of the table isn't disturbed.
   const NO_OWNER = /^(|—|-|unassigned)$/i;
   const FOLLOW_UP_ERRORS = {
     no_email: "No email found for this owner.",
@@ -934,8 +1065,7 @@
   function followUpCell(item, index) {
     const done = item.status === "done";
     const noOwner = NO_OWNER.test(String(item.owner ?? "").trim());
-    const label = item.followUpSending ? "Sending…" : item.followUpSent ? "Sent ✓" : "Follow up";
-    const button = el("button", item.followUpSent ? "follow-up follow-up-sent" : "follow-up", icon("send"), label);
+    const button = el("button", "follow-up", icon("send"), item.followUpSending ? "Sending…" : "Follow up");
     button.type = "button";
     button.setAttribute("aria-label", `Follow up on "${item.task}"`);
     button.disabled = done || noOwner || Boolean(item.followUpSending);
@@ -951,7 +1081,13 @@
       cell.append(error);
     }
     if (item.lastFollowUpAt) {
-      const last = el("div", "last-follow-up", `Last follow-up: ${formatSentAt(item.lastFollowUpAt)}`);
+      // Name the person only if they're no longer the owner (the task was reassigned since), so
+      // nobody reads it as the new owner having been reminded. Follow-ups saved before the
+      // recipient was recorded have no name, so they always use the short form.
+      const to = item.lastFollowUpTo;
+      const reassigned = Boolean(to) && to.trim().toLowerCase() !== String(item.owner ?? "").trim().toLowerCase();
+      const when = formatSentAt(item.lastFollowUpAt);
+      const last = el("div", "last-follow-up", reassigned ? `Last follow-up to ${to}: ${when}` : `Last follow-up: ${when}`);
       last.title = new Date(item.lastFollowUpAt).toLocaleString();
       cell.append(last);
     }
@@ -969,11 +1105,10 @@
   async function sendFollowUp(item, index) {
     if (item.followUpSending) return;
     item.followUpSending = true;
-    item.followUpSent = false;
     item.followUpError = null;
     refreshFollowUp(item, index, true);
 
-    let error = null;
+    let error = null, sent = null, alreadyToday = null;
     try {
       const response = await fetch(`/api/meetings/${meetingLink.id}/action-items/${index}/follow-up`, {
         method: "POST",
@@ -981,25 +1116,113 @@
         body: JSON.stringify({ task: item.task }),
       });
       const result = await response.json().catch(() => ({}));
-      // Only a confirmed send updates "Last follow-up".
-      if (response.ok && result.sentAt) item.lastFollowUpAt = result.sentAt;
-      else error = FOLLOW_UP_ERRORS[result.error] ?? "Couldn't send the follow-up. Try again.";
+      if (response.ok && result.sentAt) {
+        // Only a confirmed send updates "Last follow-up".
+        item.lastFollowUpAt = result.sentAt;
+        item.lastFollowUpTo = result.owner ?? item.owner;
+        sent = { owner: item.lastFollowUpTo };
+      } else if (response.status === 429 && result.error === "already_followed_up_today") {
+        // Followed up earlier today, perhaps by someone else: show that time too.
+        if (result.sentAt && (!item.lastFollowUpAt || result.sentAt > item.lastFollowUpAt)) {
+          item.lastFollowUpAt = result.sentAt;
+          item.lastFollowUpTo = result.owner ?? null;
+        }
+        alreadyToday = { owner: result.owner ?? item.owner, sentAt: result.sentAt };
+      } else {
+        error = FOLLOW_UP_ERRORS[result.error] ?? "Couldn't send the follow-up. Try again.";
+      }
     } catch {
       error = "Couldn't send the follow-up. Check your connection and try again.";
     }
 
     item.followUpSending = false;
     item.followUpError = error;
-    item.followUpSent = !error;
     refreshFollowUp(item, index, true);
-    if (!error) {
-      setTimeout(() => {
-        if (!item.followUpSent) return;
-        item.followUpSent = false;
-        refreshFollowUp(item, index);
-      }, 3000);
-    }
+    if (sent) showSentToast(sent.owner, item.task, index);
+    if (alreadyToday) showAlreadyTodayPopup(alreadyToday.owner, alreadyToday.sentAt, item.task, index);
   }
+
+  const followUpButton = (index) => document.querySelector(`#items-body [data-follow-up="${index}"] .follow-up`);
+
+  // The dialog for a task that was already followed up today. OK, Escape or a click outside it
+  // closes it, and focus goes back to that task's Follow up button.
+  let popupFor = null; // the row whose Follow up button gets focus back
+  function showAlreadyTodayPopup(owner, sentAt, task, index) {
+    hideToast();
+    const time = sentAt ? (({ time, period }) => ` at ${time} ${period}`)(clockParts(new Date(sentAt))) : "";
+    $("limit-popup-text").textContent = `${owner} was already emailed about this task today${time}.`;
+    $("limit-popup-task").textContent = task;
+    popupFor = index;
+    $("limit-popup").showModal();
+    $("limit-popup-ok").focus();
+  }
+  $("limit-popup-ok").addEventListener("click", () => $("limit-popup").close());
+  $("limit-popup").addEventListener("click", (event) => {
+    if (event.target === $("limit-popup")) $("limit-popup").close(); // the backdrop, not the card
+  });
+  $("limit-popup").addEventListener("close", () => {
+    if (popupFor !== null) followUpButton(popupFor)?.focus();
+    popupFor = null;
+  });
+
+  // The card for a sent follow-up: slides in at the bottom right and closes after 5 seconds,
+  // waiting while the mouse is over it or it has keyboard focus. Screen readers hear the
+  // message through the announcer. It doesn't take focus, so the page can still be used.
+  const TOAST_MS = 5000;
+  let toastTimer = null, toastLeft = 0, toastStarted = 0, toastFor = null;
+  function showSentToast(owner, task, index) {
+    const toast = $("toast");
+    $("toast-text").textContent = `${owner} was emailed about “${task}”.`;
+    // Start the slide-in and the 5-second bar from the beginning, even if a card is showing.
+    toast.hidden = true;
+    const bar = toast.querySelector(".toast-timer");
+    bar.replaceWith(bar.cloneNode());
+    toast.classList.remove("paused");
+    void toast.offsetWidth;
+    toast.hidden = false;
+    // Back to top moves up out of the card's way while it shows.
+    document.body.style.setProperty("--toast-h", `${toast.offsetHeight}px`);
+    document.body.classList.add("toast-open");
+    toastFor = index;
+    toastLeft = TOAST_MS;
+    startToastTimer();
+    $("announcer").textContent = "";
+    setTimeout(() => { $("announcer").textContent = `Follow-up sent. ${owner} was emailed about “${task}”.`; }, 50);
+  }
+  function startToastTimer() {
+    clearTimeout(toastTimer);
+    toastStarted = performance.now();
+    toastTimer = setTimeout(hideToast, toastLeft);
+  }
+  function pauseToast() {
+    if ($("toast").hidden || toastTimer === null) return;
+    clearTimeout(toastTimer);
+    toastTimer = null;
+    toastLeft = Math.max(0, toastLeft - (performance.now() - toastStarted));
+    $("toast").classList.add("paused");
+  }
+  function resumeToast() {
+    if ($("toast").hidden || toastTimer !== null || $("toast").matches(":hover, :focus-within")) return;
+    $("toast").classList.remove("paused");
+    startToastTimer();
+  }
+  function hideToast() {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+    const hadFocus = $("toast").contains(document.activeElement);
+    $("toast").hidden = true;
+    document.body.classList.remove("toast-open");
+    // If the close button had focus, put it back on the Follow up button that sent the email.
+    if (hadFocus && toastFor !== null) followUpButton(toastFor)?.focus();
+  }
+  $("toast").addEventListener("mouseenter", pauseToast);
+  $("toast").addEventListener("mouseleave", () => setTimeout(resumeToast, 0));
+  $("toast").addEventListener("focusin", pauseToast);
+  $("toast").addEventListener("focusout", () => setTimeout(resumeToast, 0));
+  $("toast-close").addEventListener("click", hideToast);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("toast").hidden && !$("limit-popup").open) hideToast();
+  });
 
   // ---- Saving statuses ----
   // The note under a status ("Saving…", "Saved", "Couldn't save…") is kept on the item, so
@@ -1015,6 +1238,7 @@
   const SAVE_ERRORS = {
     item_changed: "This meeting has changed since you opened it. Reload the page.",
     not_found: "This meeting is no longer available.",
+    invalid_reason: "That reason couldn't be saved.",
   };
 
   // Saves one item's status. Saves for the same item go one at a time, and if the status
@@ -1029,17 +1253,20 @@
     let failure = null;
     do {
       item.saveAgain = false;
-      const wanted = item.status;
+      const wanted = item.status, wantedReason = item.blockedReason;
       setNote(item, index, "Saving…");
       failure = null;
       try {
+        // A Blocked task's reason goes with it (null if it has none).
+        const body = { status: wanted, task: item.task, ...(wanted === "blocked" ? { reason: wantedReason ?? null } : {}) };
         const response = await fetch(`/api/meetings/${meetingLink.id}/action-items/${index}/status`, {
           method: "PUT",
           headers: { "Content-Type": "application/json", "X-Meeting-Link": meetingLink.hash },
-          body: JSON.stringify({ status: wanted, task: item.task }),
+          body: JSON.stringify(body),
         });
         if (response.ok) {
           item.savedStatus = wanted;
+          item.savedReason = wanted === "blocked" ? wantedReason ?? null : null;
         } else {
           const { error } = await response.json().catch(() => ({}));
           failure = SAVE_ERRORS[error] ?? "Couldn't save. Try again.";
@@ -1051,8 +1278,9 @@
     item.saving = false;
 
     if (failure) {
-      // Put the status back to the last one that was saved.
+      // Put the status (and any reason) back to the last ones that were saved.
       item.status = item.savedStatus;
+      item.blockedReason = item.savedReason;
       setNote(item, index, failure, true);
       renderActionItems();
       return;
@@ -1262,7 +1490,8 @@
             return {
               color: item.status === "done" ? [107, 114, 128] : undefined,
               cells: [
-                item.task,
+                // A blocked task's reason goes under its name, as on the page.
+                item.status === "blocked" && item.blockedReason ? `${item.task}\nBlocked: ${item.blockedReason}` : item.task,
                 item.owner,
                 item.due || "—",
                 isOverdue(item) ? { text: `${status} (${overdueText(item)})`, color: [180, 84, 10] } : status,
@@ -1515,6 +1744,27 @@
   enhanceSelect($("sort-select"));
   // The "Connect GitHub" button in the top bar is disabled (in index.html) until the integration exists.
 
+  // ---- Back to action items, and the shadow under the stuck column headings ----
+  // The button fades in once the top of the action items (heading, filters, search) is more
+  // than a screen above the window. It scrolls back there, leaving a little space above the
+  // card (instantly for people who turn off motion in their system settings), and moves focus to
+  // the "Action items" heading, so keyboard users carry on from there as well.
+  const lessMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const actionsCard = () => $("actions-heading").closest(".card");
+  function updateOnScroll() {
+    $("to-top").classList.toggle("is-visible", actionsCard().getBoundingClientRect().top < -innerHeight);
+    const table = document.querySelector(".items");
+    const r = table.getBoundingClientRect();
+    table.classList.toggle("head-stuck", r.top < 0 && r.bottom > 80);
+  }
+  addEventListener("scroll", updateOnScroll, { passive: true });
+  addEventListener("resize", updateOnScroll);
+  $("to-top").addEventListener("click", () => {
+    const top = actionsCard().getBoundingClientRect().top + scrollY - 16;
+    scrollTo({ top: Math.max(0, top), behavior: lessMotion.matches ? "auto" : "smooth" });
+    $("actions-heading").focus({ preventScroll: true });
+  });
+
   // ---- Loading ----
   // Shows why the meeting couldn't be shown. The Try again button appears only when trying again
   // might help: no connection, a server error, or a reply that wasn't meeting data. A missing or
@@ -1569,6 +1819,8 @@
       // The API sends each item's saved status (open if nobody has changed it).
       if (!STATUSES.some((s) => s.id === item.status)) item.status = "open";
       item.savedStatus = item.status;
+      item.blockedReason = item.status === "blocked" ? item.blockedReason ?? null : null;
+      item.savedReason = item.blockedReason;
     });
     nameUnnamedSpeakers(meeting.transcript);
     speakers = [...new Set(meeting.transcript.map((line) => line.speaker))];

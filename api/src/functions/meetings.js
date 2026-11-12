@@ -1,8 +1,10 @@
 // The meeting details page's API. All routes take the link's hash in the X-Meeting-Link header.
 //   GET  /api/meetings/{id}                                   the meeting, with saved statuses
 //                                                             and last follow-up times
-//   PUT  /api/meetings/{id}/action-items/{index}/status       body { status, task }
+//   PUT  /api/meetings/{id}/action-items/{index}/status       body { status, task, reason? }
+//                                                             (reason: why a Blocked task is blocked)
 //   POST /api/meetings/{id}/action-items/{index}/follow-up    body { task }: emails the owner
+//                                                             (once a day per task; 429 if sent today)
 //   PUT  /api/meetings/{id}/action-items/{index}/details      body { task, owner?, due? }
 // Anyone with a meeting's link can change statuses, owners and due dates and send follow-ups;
 // there's no sign-in.

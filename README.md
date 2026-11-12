@@ -31,7 +31,7 @@ All in resource group `dev-jrc-meeting-agent-rg-aue`:
 | `meetingagent-logic-app` | The workflow above |
 | `meetingagent-kv` | Secrets the Logic App reads: `fireflies-api-key`, `anthropic-api-key`, `github-access-token`, `meeting-link-secret` |
 | `meetingagentstor`, container `meetings` | One JSON file per meeting: written by the Logic App with its managed identity, read by the site's API |
-| `meetingagentstor`, container `meeting-status` | One JSON file per meeting with the action item statuses people have changed and the time of each task's last follow-up email, written by the site's API |
+| `meetingagentstor`, container `meeting-status` | One JSON file per meeting with the action item statuses people have changed and the time and recipient of each task's last follow-up email, written by the site's API |
 | `meetingagent-followup-logic-app` | Sends follow-up emails when someone clicks Follow up on a task (Consumption, Australia East, built in the portal) |
 | `meetingagent-web` | Static Web App for the meeting details page (Free plan, East Asia) |
 
@@ -50,7 +50,16 @@ The status file holds only items someone has changed
 (`{ "items": [ { "index", "task", "status" } ], "updatedAt" }`); any other item
 shows as Open. An entry applies only while both its row number and task text
 still match the meeting. Anyone with a meeting's link can change its statuses,
-and who changed them isn't recorded.
+and who changed them isn't recorded. Choosing Blocked asks why (required, up to
+200 characters); the reason is saved with the status (`"reason"` on the entry,
+`reason` in the `PUT …/status` body) and shown in red under the task's name, where
+clicking it changes it. Moving the task out of Blocked removes the reason; tasks
+blocked before reasons existed show an "Add the reason it's blocked" link. The
+exported PDF shows the reason under the task too. Done tasks go to the end of the list and are
+folded away behind "Show N done tasks" (shown directly when the Done filter is
+chosen). The column headings stay at the top of the window while the list
+scrolls, and a "Back to action items" button appears once the list is scrolled
+well down; it goes back to the top of the action items (heading, filters, search).
 
 **Editing owners and due dates.** Clicking an owner opens a list of everyone
 who owns a task or speaks in the meeting, plus Unassigned; clicking a due date
@@ -61,7 +70,10 @@ stored; Reset removes them). Edited fields show "Edited", with the original on
 hover. Everything else uses the edited values, including sorting, filters,
 Overdue, the exported PDF and follow-up emails. Edited due dates are saved in
 Claude's form ("Thu 5 Nov"). The task text itself isn't editable, because
-statuses, follow-ups and edits are matched by it.
+statuses, follow-ups and edits are matched by it. A Done task's owner and due
+date can't be changed: the page shows them as plain text, and the API answers
+`409 done` (checked against the same status file read the save uses). Moving
+the task out of Done makes them editable again.
 
 **Follow-up emails.** Clicking Follow up on a task (disabled for Done tasks and
 tasks with no owner) calls `POST /api/meetings/{id}/action-items/{index}/follow-up`.
@@ -81,10 +93,16 @@ calls `meetingagent-followup-logic-app` at `FOLLOWUP_TRIGGER_URL` with
    and nothing is sent. If a search or the send fails, no response runs and the
    API gets an error.
 
-The API records the time (`followUps` in the status file) only when the Logic
-App answers 200; the page shows it as "Last follow-up" under the button, and
-hides it until a follow-up has been sent. Anyone with the meeting's link can send
-follow-ups. Each email costs about AUD 0.0004–0.0006 (Office 365 connector
+The API records the time and recipient (`followUps` in the status file) only
+when the Logic App answers 200; the page confirms it with a pop-up card and shows
+it as "Last follow-up" under the button, and hides that until a follow-up has
+been sent. If the task has been reassigned since, the line names who the
+follow-up went to ("Last follow-up to Binura Ranasinghe: …"), so it isn't read as
+the new owner having been reminded. Each task can be followed up once a day (Sri Lanka calendar day) per
+owner: a second request that day gets `429 already_followed_up_today` with the
+earlier time and recipient, without calling the Logic App, and the page explains
+it in a pop-up dialog. If the owner changes, the new owner can be followed up
+straight away. Anyone with the meeting's link can send follow-ups. Each email costs about AUD 0.0004–0.0006 (Office 365 connector
 actions); the other steps are built-in and free.
 
 ## Set up
