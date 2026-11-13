@@ -15,8 +15,8 @@ function isValidLink(id, hash, secret) {
 }
 
 // Claude's summary has three sections: "## Overview", "## Key points" and
-// "## Action items" (a table with Owner | Action item | Due date, or the sentence
-// "No action items were identified.").
+// "## Action items" (a table with Owner | Action item | Due date, and since 13 Nov 2026 a
+// fourth column, Blocker; or the sentence "No action items were identified.").
 function parseSummary(markdown) {
   const sections = {};
   let current = null;
@@ -53,7 +53,14 @@ function parseActionItems(lines) {
   return rows
     .slice(separator + 1)
     .filter((cells) => cells.length >= 3 && cells[1])
-    .map(([owner, task, due]) => ({ owner, task, due }));
+    .map(([owner, task, due, blocker]) => ({ owner, task, due, blocker: meetingBlocker(blocker) }));
+}
+
+// What Claude found blocking the item in the meeting (the Blocker column), or null when the
+// cell says "—" or is empty, or the table has no such column (summaries before 13 Nov 2026).
+function meetingBlocker(cell) {
+  const text = String(cell ?? "").trim();
+  return /^(|—|–|-|none|n\/a)$/i.test(text) ? null : text;
 }
 
 // Fireflies' transcript file: a "# title" line, a "**Meeting Date:**" line, then one line
@@ -108,9 +115,12 @@ class StorageError extends Error {}
 
 const entryFor = (entries, index, task) => entries.find((e) => e && e.index === index && e.task === task);
 
-function savedStatus(entries, index, task) {
-  const entry = entryFor(entries, index, task);
-  return STATUS_IDS.includes(entry?.status) ? entry.status : "open";
+// An item's status: the one someone saved, or, if nobody has changed it, Blocked when Claude
+// found a blocker for it in the meeting and Open otherwise.
+function currentStatus(entries, index, item) {
+  const entry = entryFor(entries, index, item.task);
+  if (STATUS_IDS.includes(entry?.status)) return entry.status;
+  return item.blocker ? "blocked" : "open";
 }
 
 // Why a Blocked task is blocked, or null.
@@ -233,14 +243,23 @@ async function getMeeting(id, hash, settings, fetchImpl = fetch) {
       date: saved.date ?? null,
       participants: Array.isArray(saved.participants) ? saved.participants : [],
       summary: { overview, keyPoints },
-      actionItems: actionItems.map((item, index) => ({
-        ...item,
-        ...withEdits(item, index, statuses.edits),
-        status: savedStatus(statuses.items, index, item.task),
-        blockedReason: blockedReason(statuses.items, index, item.task),
-        lastFollowUpAt: lastFollowUp(statuses.followUps, index, item.task),
-        lastFollowUpTo: lastFollowUpTo(statuses.followUps, index, item.task),
-      })),
+      actionItems: actionItems.map(({ blocker, ...item }, index) => {
+        const status = currentStatus(statuses.items, index, { ...item, blocker });
+        // A Blocked item's reason: the one someone saved, otherwise what Claude found in the
+        // meeting. blockedReasonFrom tells the page which ("person" or "meeting").
+        const saved = status === "blocked" ? blockedReason(statuses.items, index, item.task) : null;
+        const reason = status === "blocked" ? saved ?? blocker : null;
+        return {
+          ...item,
+          ...withEdits(item, index, statuses.edits),
+          status,
+          blockedReason: reason,
+          blockedReasonFrom: reason ? (saved ? "person" : "meeting") : null,
+          meetingBlocker: blocker,
+          lastFollowUpAt: lastFollowUp(statuses.followUps, index, item.task),
+          lastFollowUpTo: lastFollowUpTo(statuses.followUps, index, item.task),
+        };
+      }),
       transcript: parseTranscript(saved.transcriptMarkdown),
     },
   };
@@ -348,7 +367,7 @@ async function setActionItemDetails(id, hash, indexText, body, settings, fetchIm
     const editedAt = now().toISOString();
     let edits = [];
     const result = await updateStatusFile(id, settings, fetchImpl, (doc) => {
-      if (savedStatus(doc.items, index, item.task) === "done") return null;
+      if (currentStatus(doc.items, index, item) === "done") return null;
       const current = entryFor(doc.edits, index, item.task) ?? {};
       const owner = hasOwner ? (body.owner === null ? undefined : body.owner.trim()) : current.owner;
       const due = hasDue ? (body.due === null ? undefined : body.due) : current.due;
@@ -483,7 +502,7 @@ async function sendFollowUp(id, hash, indexText, body, settings, fetchImpl = fet
   const item = parseSummary(saved.summaryMarkdown).actionItems[index];
   if (!item) return { status: 404, body: { error: "not_found" } };
   if (body.task !== item.task) return { status: 409, body: { error: "item_changed" } };
-  const status = savedStatus(statusFile.items, index, item.task);
+  const status = currentStatus(statusFile.items, index, item);
   if (status === "done") return { status: 409, body: { error: "done" } };
   // Someone may have changed the owner or due date; the email goes to the current owner.
   const current = withEdits(item, index, statusFile.edits);

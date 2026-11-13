@@ -48,7 +48,10 @@ Both expire after a year; run the deploy script again before then to renew them.
 **Action item statuses.** Changing a status on the page saves it straight away.
 The status file holds only items someone has changed
 (`{ "items": [ { "index", "task", "status" } ], "updatedAt" }`); any other item
-shows as Open. An entry applies only while both its row number and task text
+shows as Open, or as Blocked when Claude's summary has a Blocker for it (the
+action items table's fourth column, from 13 Nov 2026). Claude's blocker is then
+the reason (shown like any other; `blockedReasonFrom: "meeting"` in the API) until
+someone changes it. An entry applies only while both its row number and task text
 still match the meeting. Anyone with a meeting's link can change its statuses,
 and who changed them isn't recorded. Choosing Blocked asks why (required, up to
 200 characters); the reason is saved with the status (`"reason"` on the entry,
@@ -73,10 +76,15 @@ Claude's form ("Thu 5 Nov"). The task text itself isn't editable, because
 statuses, follow-ups and edits are matched by it. A Done task's owner and due
 date can't be changed: the page shows them as plain text, and the API answers
 `409 done` (checked against the same status file read the save uses). Moving
-the task out of Done makes them editable again.
+the task out of Done makes them editable again. An owner Claude copied from the
+transcript as a placeholder, such as Fireflies' "@1" for a speaker it couldn't
+identify, shows as that speaker's label in the transcript ("Unnamed Speaker")
+with a grey "?". It comes after the named owners in sorting and the owner
+filter, and the task can't be followed up until someone picks the real owner.
+The saved summary and the summary email keep Claude's value.
 
-**Follow-up emails.** Clicking Follow up on a task (disabled for Done tasks and
-tasks with no owner) calls `POST /api/meetings/{id}/action-items/{index}/follow-up`.
+**Follow-up emails.** Clicking Follow up on a task (disabled for Done tasks,
+tasks with no owner and tasks owned by an unnamed speaker) calls `POST /api/meetings/{id}/action-items/{index}/follow-up`.
 The page only says which task; the API builds the subject and body itself (task,
 due date and Overdue in Sri Lanka time, status, meeting, View Details button) and
 calls `meetingagent-followup-logic-app` at `FOLLOWUP_TRIGGER_URL` with

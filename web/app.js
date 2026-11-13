@@ -219,14 +219,15 @@
 
   const toolsActive = () => Boolean(searchText || ownerFilter || dueFilter);
 
-  // Every owner A–Z with how many tasks they have, and "Unassigned" always last (with "(0)" when
-  // every task has an owner). Rebuilt after an owner is changed; if the chosen person no longer
-  // has any tasks, the filter goes back to everyone. Unassigned stays chosen even at 0.
+  // Every owner A–Z with how many tasks they have, then unnamed speakers, and "Unassigned" always
+  // last (with "(0)" when every task has an owner), so the tasks that need an owner sit together.
+  // Rebuilt after an owner is changed; if the chosen person no longer has any tasks, the filter
+  // goes back to everyone. Unassigned stays chosen even at 0.
   function fillOwnerFilter() {
     const counts = new Map();
     for (const item of meeting.actionItems) counts.set(ownerKey(item), (counts.get(ownerKey(item)) ?? 0) + 1);
     const names = [...counts.keys()].filter((key) => key !== "__none__")
-      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+      .sort((a, b) => (unnamedLabels.has(a) - unnamedLabels.has(b)) || a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }));
     const options = names.map((name) => {
       const option = el("option", "", `${name} (${counts.get(name)})`);
       option.value = name;
@@ -414,13 +415,13 @@
   }
 
   // ---- Sorting ----
-  // Owner: by name, A–Z or Z–A. Due: dates in date order ("Before 20 Nov" counts as the 19th, so
-  // it comes just before a plain "20 Nov"), then due dates that are phrases ("Before release"),
-  // A–Z. Items with no owner or no due date go last in either direction.
+  // Owner: by name, A–Z or Z–A, then unnamed speakers. Due: dates in date order ("Before 20 Nov"
+  // counts as the 19th, so it comes just before a plain "20 Nov"), then due dates that are phrases
+  // ("Before release"), A–Z. Items with no owner or no due date go last in either direction.
   function sortKey(item, by) {
     if (by === "owner") {
       const owner = String(item.owner ?? "").trim();
-      return NO_OWNER.test(owner) ? { empty: true } : { group: 0, value: owner.toLowerCase() };
+      return NO_OWNER.test(owner) ? { empty: true } : { group: hasUnnamedOwner(item) ? 1 : 0, value: owner.toLowerCase() };
     }
     const due = String(item.due ?? "").trim();
     if (!due || due === "—" || due === "-") return { empty: true };
@@ -611,6 +612,7 @@
     const setStatus = (status, reason = null) => {
       item.status = status;
       item.blockedReason = status === "blocked" ? reason : null;
+      item.reasonFrom = reasonSource(item, item.blockedReason);
       renderActionItems();
       // The table is rebuilt, so put focus back on this item's status. A task just marked Done
       // may now be folded away: then focus goes to "Show N done tasks", and screen readers hear
@@ -647,13 +649,18 @@
   }
 
   // ---- Why a task is blocked ----
-  // Under a blocked task's name: "Blocked: <reason>" in red (click it to change the reason), or,
-  // for a task blocked before reasons existed, a link to add one.
+  // Under a blocked task's name: the reason in a red box (click it to change the reason), or,
+  // for a task blocked before reasons existed, a box to add one. A reason Claude found in the
+  // meeting (the summary's Blocker column) looks the same as anyone else's; reasonFrom only
+  // decides how it's saved. Once someone changes it, it's theirs; choosing exactly Claude's
+  // wording keeps it as Claude's.
+  const reasonSource = (item, reason) => (!reason ? null : reason === item.meetingBlocker ? "meeting" : "person");
   function blockedReasonLine(item, index) {
+    // A soft red box with the blocked icon and the reason (the status already says Blocked).
+    // A dashed box offers to add one.
     const reason = item.blockedReason;
-    const button = reason
-      ? el("button", "blocked-reason", el("span", "blocked-label", "Blocked: "), ...highlight(reason, searchText))
-      : el("button", "blocked-reason blocked-reason-missing", "Add the reason it's blocked");
+    const text = el("span", "blocked-reason-text", ...(reason ? highlight(reason, searchText) : ["Add the reason it's blocked"]));
+    const button = el("button", reason ? "blocked-reason" : "blocked-reason blocked-reason-missing", icon("blocked"), text);
     button.type = "button";
     button.dataset.blockedReason = index;
     button.setAttribute("aria-label", reason ? `Blocked: ${reason}. Change the reason` : `Add the reason "${item.task}" is blocked`);
@@ -662,6 +669,7 @@
       const next = await askBlockedReason(item, index, { returnTo: again });
       if (!next || next === item.blockedReason) return;
       item.blockedReason = next;
+      item.reasonFrom = reasonSource(item, next);
       renderActionItems();
       again();
       saveStatus(item, index);
@@ -677,7 +685,8 @@
     const alreadyBlocked = item.status === "blocked";
     $("blocked-popup-title").textContent = alreadyBlocked ? "Why is this task blocked?" : "What's blocking this task?";
     $("blocked-popup-task").textContent = item.task;
-    $("blocked-reason-input").value = item.blockedReason ?? "";
+    // Starts with the current reason, or what Claude found in the meeting, if anything.
+    $("blocked-reason-input").value = item.blockedReason ?? item.meetingBlocker ?? "";
     $("blocked-save").textContent = alreadyBlocked ? "Save reason" : "Mark as Blocked";
     updateBlockedCount();
     blockedReturn = returnTo;
@@ -737,6 +746,7 @@
   // "Unnamed Speaker", or "Unnamed Speaker 1", "Unnamed Speaker 2"… when a meeting has more than
   // one, numbered in the order they first speak. Done once when the meeting loads, so the
   // transcript, its search, the downloads, the PDF and the speaker list all use the same label.
+  let unnamedLabelFor = new Map(); // a speaker's placeholder name, lower-cased → their label
   function nameUnnamedSpeakers(lines) {
     const unnamed = [...new Set(lines.map((line) => line.speaker))].filter((name) => !isRealName(String(name ?? "").trim()));
     const labels = new Map(unnamed.map((name, i) => [name, unnamed.length === 1 ? "Unnamed Speaker" : `Unnamed Speaker ${i + 1}`]));
@@ -744,7 +754,27 @@
       if (labels.has(line.speaker)) line.speaker = labels.get(line.speaker);
     }
     unnamedLabels = new Set(labels.values());
+    unnamedLabelFor = new Map([...labels].map(([name, label]) => [String(name ?? "").trim().toLowerCase(), label]));
   }
+
+  // Claude writes owners as they appear in the transcript, so a speaker Fireflies couldn't
+  // identify owns tasks as "@1". Such an owner gets the speaker's label from the transcript, or
+  // "Unnamed Speaker" if they don't speak in it. Applied to what the API sends (on load and after
+  // each owner save), so the owner column, filter, sorting, search and PDF all use the label; the
+  // API and the saved summary keep Claude's value. These tasks can't be followed up; clicking
+  // the owner picks the real person.
+  function ownerLabel(owner) {
+    const name = String(owner ?? "").trim();
+    if (NO_OWNER.test(name) || isRealName(name) || unnamedLabels.has(name)) return owner;
+    const label = unnamedLabelFor.get(name.toLowerCase()) ?? "Unnamed Speaker";
+    unnamedLabels.add(label);
+    return label;
+  }
+  function labelOwners(item) {
+    item.owner = ownerLabel(item.owner);
+    if (item.original) item.original = { ...item.original, owner: ownerLabel(item.original.owner) };
+  }
+  const hasUnnamedOwner = (item) => unnamedLabels.has(String(item.owner ?? "").trim());
 
   // Everyone with a real name who owns a task or speaks in the meeting, A–Z, then "Unassigned".
   function ownerChoices() {
@@ -823,8 +853,8 @@
       const current = NO_OWNER.test(String(item.owner ?? "").trim()) ? "Unassigned" : item.owner;
       const choices = ownerChoices();
       const selected = choices.find((name) => name.toLowerCase() === current.toLowerCase());
-      // If Claude gave the task a placeholder owner (like "@1"), show it at the top as the current
-      // value, greyed out, so the list doesn't pretend someone else is the owner.
+      // If the owner is an unnamed speaker ("Unnamed Speaker", Claude's "@1"), show it at the top
+      // as the current value, greyed out, so the list doesn't pretend someone else is the owner.
       if (!selected) {
         const option = el("option", "", `${current} (current)`);
         option.value = current;
@@ -1016,8 +1046,10 @@
         body: JSON.stringify({ task: item.task, ...change }),
       });
       const result = await response.json().catch(() => ({}));
-      if (response.ok) Object.assign(item, { owner: result.owner, due: result.due, original: result.original, editedAt: result.editedAt });
-      else error = EDIT_ERRORS[result.error] ?? "Couldn't save. Try again.";
+      if (response.ok) {
+        Object.assign(item, { owner: result.owner, due: result.due, original: result.original, editedAt: result.editedAt });
+        labelOwners(item); // Reset brings back Claude's "@1": show it as "Unnamed Speaker" again
+      } else error = EDIT_ERRORS[result.error] ?? "Couldn't save. Try again.";
       // Someone else marked it Done since this page loaded: show it as Done here too.
       if (result.error === "done") item.status = item.savedStatus = "done";
     } catch {
@@ -1065,12 +1097,14 @@
   function followUpCell(item, index) {
     const done = item.status === "done";
     const noOwner = NO_OWNER.test(String(item.owner ?? "").trim());
+    const unnamed = hasUnnamedOwner(item); // nobody to email until someone picks the real owner
     const button = el("button", "follow-up", icon("send"), item.followUpSending ? "Sending…" : "Follow up");
     button.type = "button";
     button.setAttribute("aria-label", `Follow up on "${item.task}"`);
-    button.disabled = done || noOwner || Boolean(item.followUpSending);
+    button.disabled = done || noOwner || unnamed || Boolean(item.followUpSending);
     if (done) button.title = "This task is done";
     else if (noOwner) button.title = "This task has no owner";
+    else if (unnamed) button.title = "This task's owner wasn't identified";
     button.addEventListener("click", () => sendFollowUp(item, index));
 
     const cell = el("div", "follow-up-cell", button);
@@ -1253,12 +1287,13 @@
     let failure = null;
     do {
       item.saveAgain = false;
-      const wanted = item.status, wantedReason = item.blockedReason;
+      const wanted = item.status, wantedReason = item.blockedReason, wantedFrom = item.reasonFrom;
       setNote(item, index, "Saving…");
       failure = null;
       try {
-        // A Blocked task's reason goes with it (null if it has none).
-        const body = { status: wanted, task: item.task, ...(wanted === "blocked" ? { reason: wantedReason ?? null } : {}) };
+        // A Blocked task's reason goes with it (null if it has none). Claude's reason from the
+        // meeting isn't saved as a person's: null lets the API keep showing it as Claude's.
+        const body = { status: wanted, task: item.task, ...(wanted === "blocked" ? { reason: wantedFrom === "meeting" ? null : wantedReason ?? null } : {}) };
         const response = await fetch(`/api/meetings/${meetingLink.id}/action-items/${index}/status`, {
           method: "PUT",
           headers: { "Content-Type": "application/json", "X-Meeting-Link": meetingLink.hash },
@@ -1267,6 +1302,7 @@
         if (response.ok) {
           item.savedStatus = wanted;
           item.savedReason = wanted === "blocked" ? wantedReason ?? null : null;
+          item.savedReasonFrom = wanted === "blocked" ? wantedFrom ?? null : null;
         } else {
           const { error } = await response.json().catch(() => ({}));
           failure = SAVE_ERRORS[error] ?? "Couldn't save. Try again.";
@@ -1281,6 +1317,7 @@
       // Put the status (and any reason) back to the last ones that were saved.
       item.status = item.savedStatus;
       item.blockedReason = item.savedReason;
+      item.reasonFrom = item.savedReasonFrom;
       setNote(item, index, failure, true);
       renderActionItems();
       return;
@@ -1815,15 +1852,21 @@
       return;
     }
     meetingLink = { id: link[1], hash: link[2] };
+    // Unnamed speakers first: tasks they own use the same labels.
+    nameUnnamedSpeakers(meeting.transcript);
+    speakers = [...new Set(meeting.transcript.map((line) => line.speaker))];
     meeting.actionItems.forEach((item) => {
       // The API sends each item's saved status (open if nobody has changed it).
       if (!STATUSES.some((s) => s.id === item.status)) item.status = "open";
       item.savedStatus = item.status;
       item.blockedReason = item.status === "blocked" ? item.blockedReason ?? null : null;
+      // Where the reason came from: "meeting" (Claude found it in the transcript) or "person".
+      item.reasonFrom = item.blockedReason ? item.blockedReasonFrom ?? "person" : null;
+      item.meetingBlocker = item.meetingBlocker ?? null;
       item.savedReason = item.blockedReason;
+      item.savedReasonFrom = item.reasonFrom;
+      labelOwners(item);
     });
-    nameUnnamedSpeakers(meeting.transcript);
-    speakers = [...new Set(meeting.transcript.map((line) => line.speaker))];
 
     renderHeader();
     renderSummary();

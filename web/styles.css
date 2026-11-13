@@ -624,13 +624,14 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
 .popup-cancel:hover { background: #f9fafb; }
 .popup-cancel:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 
-/* Under a blocked task's name: why it's blocked (click to change it), or a link to add it. */
-.blocked-reason { display: block; max-width: calc(100% + 6px); margin: 4px 0 0 -6px; padding: 2px 6px; border: 0; border-radius: 6px; background: none; color: #b42318; font: inherit; font-size: 13px; line-height: 1.45; text-align: left; overflow-wrap: break-word; cursor: pointer; }
-.blocked-reason:hover { background: #fdeceb; }
-.blocked-reason:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
-.blocked-label { font-weight: 600; }
-.blocked-reason-missing { color: var(--blue); font-weight: 600; }
-.blocked-reason-missing:hover { background: var(--blue-soft); }
+/* Under a blocked task's name: why it's blocked, in a soft red box (the Blocked colour) with the
+   blocked icon. Click it to change the reason. A dashed box offers to add a missing one. */
+.blocked-reason { display: flex; align-items: flex-start; gap: 8px; width: 100%; margin: 8px 0 0; padding: 8px 10px; border: 1px solid #fecdca; border-radius: 8px; background: #fef3f2; color: #b42318; font: inherit; font-size: 13px; line-height: 1.45; text-align: left; overflow-wrap: break-word; cursor: pointer; }
+.blocked-reason:hover { border-color: #fda29b; background: #fde7e5; }
+.blocked-reason:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.blocked-reason .icon { flex: none; width: 15px; height: 15px; margin-top: 2px; stroke-width: 2; }
+.blocked-reason-text { min-width: 0; }
+.blocked-reason-missing { border-style: dashed; background: none; font-weight: 600; }
 
 /* The card that confirms a sent follow-up: slides up at the bottom right and closes by itself
    after 5 seconds (the green bar shows the time left; it waits while the mouse is over it). */
