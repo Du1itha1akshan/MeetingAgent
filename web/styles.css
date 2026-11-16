@@ -632,6 +632,15 @@ th:is([aria-sort="ascending"], [aria-sort="descending"]) .sort-btn .icon { opaci
 .blocked-reason .icon { flex: none; width: 15px; height: 15px; margin-top: 2px; stroke-width: 2; }
 .blocked-reason-text { min-width: 0; }
 .blocked-reason-missing { border-style: dashed; background: none; font-weight: 600; }
+/* A reason with a Resolve button: the box holds both; Resolve drops below the reason when the
+   column is narrow. */
+.blocked-box { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; margin: 8px 0 0; padding: 4px; border: 1px solid #fecdca; border-radius: 8px; background: #fef3f2; }
+.blocked-box .blocked-reason { flex: 1 1 140px; width: auto; margin: 0; padding: 4px 6px; border: 0; border-radius: 6px; background: none; }
+.blocked-box .blocked-reason:hover { background: #fde7e5; }
+.blocked-resolve { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 1px solid #fecdca; border-radius: 6px; background: #fff; color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.blocked-resolve:hover { border-color: #fda29b; background: #fffafa; }
+.blocked-resolve:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.blocked-resolve .icon { width: 14px; height: 14px; color: #067647; stroke-width: 2.5; }
 
 /* The card that confirms a sent follow-up: slides up at the bottom right and closes by itself
    after 5 seconds (the green bar shows the time left; it waits while the mouse is over it). */

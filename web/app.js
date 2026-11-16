@@ -674,7 +674,24 @@
       again();
       saveStatus(item, index);
     });
-    return button;
+    if (!reason) return button;
+
+    // Resolve: the blocker is gone, so the task moves to In progress and the reason is removed
+    // (the API drops it when the status leaves Blocked). Saved straight away, like a status
+    // change; if the save fails, the blocker comes back.
+    const resolve = el("button", "blocked-resolve", icon("check"), "Resolve");
+    resolve.type = "button";
+    resolve.setAttribute("aria-label", `Resolve the blocker on "${item.task}" and move it to In progress`);
+    resolve.addEventListener("click", () => {
+      item.status = "in_progress";
+      item.blockedReason = item.reasonFrom = null;
+      renderActionItems();
+      focusSelect(document.querySelector(`#items-body select[data-index="${index}"]`));
+      $("announcer").textContent = "";
+      setTimeout(() => { $("announcer").textContent = "Blocker resolved. The task is now In progress."; }, 50);
+      saveStatus(item, index);
+    });
+    return el("div", "blocked-box", button, resolve);
   }
 
   // The "What's blocking this task?" dialog. Resolves with the reason (trimmed), or null when

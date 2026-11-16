@@ -56,7 +56,8 @@ still match the meeting. Anyone with a meeting's link can change its statuses,
 and who changed them isn't recorded. Choosing Blocked asks why (required, up to
 200 characters); the reason is saved with the status (`"reason"` on the entry,
 `reason` in the `PUT …/status` body) and shown in red under the task's name, where
-clicking it changes it. Moving the task out of Blocked removes the reason; tasks
+clicking it changes it. A Resolve button next to the reason moves the task to
+In progress and removes the reason in one step. Moving the task out of Blocked removes the reason; tasks
 blocked before reasons existed show an "Add the reason it's blocked" link. The
 exported PDF shows the reason under the task too. Done tasks go to the end of the list and are
 folded away behind "Show N done tasks" (shown directly when the Done filter is
